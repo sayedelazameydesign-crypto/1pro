@@ -29,6 +29,7 @@ const icons = {
 function icon(name){return `<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]||icons.spark}</svg>`;}
 function injectIcons(){document.querySelectorAll('[data-icon]').forEach(el => el.innerHTML=icon(el.dataset.icon));}
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+const providerLabel=key=>key==='nvidia'?'NVIDIA':'Gemini';
 const modes={guided:'شرح موجه',exercise:'تمرين تطبيقي',quiz:'اختبار'};
 const state={me:null,skills:[],sessions:[],view:'discover',selected:null,current:null,busy:false};
 let toastTimer;
@@ -78,7 +79,7 @@ function renderChats(){
  if(!state.sessions.length){$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${state.me?.authenticated?'ابدأ جلسة مع أي مهارة، وستجدها هنا لاحقاً.':'افتح التطبيق من PromptQL لحفظ محادثاتك.'}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
  $('chats-list').innerHTML=state.sessions.map(s=>{
   const skill=state.skills.find(k=>k.id===s.skill_id);
-  return `<button class="chat-card" data-session="${s.id}"><div class="skill-icon ${skill?.color||'mint'}">${icon(skill?.icon||'message')}</div><div class="chat-details"><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.skill_name)} · ${modes[s.mode]}</p></div><time>${new Date(s.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`;
+  return `<button class="chat-card" data-session="${s.id}"><div class="skill-icon ${skill?.color||'mint'}">${icon(skill?.icon||'message')}</div><div class="chat-details"><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.skill_name)} · ${modes[s.mode]} · ${providerLabel(s.provider)}</p></div><time>${new Date(s.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`;
  }).join('');
 }
 async function refresh(){
@@ -98,7 +99,9 @@ function openSkill(id){
  $('skill-detail').innerHTML=`<div class="dialog-skill-title"><div class="skill-icon ${skill.color}">${icon(skill.icon)}</div><h2>${escapeHtml(skill.name)}</h2></div><p class="dialog-description">${escapeHtml(skill.description)}</p><div class="dialog-tags"><span>${escapeHtml(skill.category)}</span><span>${escapeHtml(skill.difficulty)}</span><span>عينة محلية</span></div>`;
  $('install-skill').disabled=skill.installed||!state.me?.authenticated;
  $('install-skill').innerHTML=icon(skill.installed?'check':'plus')+(skill.installed?'موجودة في مكتبتك':'أضف لمكتبتي');
- $('start-session').disabled=!state.me?.authenticated;
+ $('provider-choice').value='gemini';
+ $('free-confirm').checked=false;
+ updateProviderChoice();
  document.querySelector('input[name=mode][value=guided]').checked=true;
  $('skill-dialog').showModal();
 }
@@ -116,11 +119,13 @@ async function openSession(id){
 function renderConversation(){
  const session=state.current,skill=state.skills.find(s=>s.id===session.skill_id);
  $('conversation-title').textContent=skill?.name||session.skill_name;
- $('conversation-mode').textContent=modes[session.mode]+' · محادثة خاصة محفوظة';
+ $('conversation-mode').textContent=modes[session.mode]+' · '+providerLabel(session.provider)+' · محادثة خاصة محفوظة';
+ $('composer-provider').textContent=providerLabel(session.provider)+' · حفظ تلقائي · 30 طلباً / ساعة';
+ $('ai-disclaimer').textContent='يُرسل سؤالك وسياق هذه الجلسة فقط إلى '+providerLabel(session.provider)+' لإنشاء الرد. راجع الإجابات؛ لا يوجد تحويل تلقائي.';
  if(!session.messages.length){
   $('messages').innerHTML=`<div class="chat-welcome">${icon('spark')}<h3>ابدأ بسؤال، واترك الباقي لفضولك.</h3><p>مساعدك جاهز للتعلّم معك بطريقة ${modes[session.mode]}.</p><button class="starter-prompt" id="starter-prompt">${escapeHtml(skill?.starter||'ساعدني أتعلم هذه المهارة.')}</button></div>`;
  }else{
-  $('messages').innerHTML=session.messages.map(m=>`<div class="message ${m.role}"><span class="message-avatar">${m.role==='assistant'?'و':escapeHtml((state.me.user?.name||'أ')[0])}</span><div><span class="message-label">${m.role==='assistant'?'واحة · Gemini':'أنت'}</span><div class="message-content" dir="auto">${escapeHtml(m.content)}</div></div></div>`).join('');
+  $('messages').innerHTML=session.messages.map(m=>`<div class="message ${m.role}"><span class="message-avatar">${m.role==='assistant'?'و':escapeHtml((state.me.user?.name||'أ')[0])}</span><div><span class="message-label">${m.role==='assistant'?'واحة · '+providerLabel(m.provider||session.provider):'أنت'}</span><div class="message-content" dir="auto">${escapeHtml(m.content)}</div></div></div>`).join('');
  }
  $('messages').scrollTop=$('messages').scrollHeight;
 }
@@ -164,14 +169,23 @@ $('install-skill').addEventListener('click',async()=>{
  $('install-skill').disabled=true;
  try{await api('/api/skills/'+state.selected.id+'/install',{});await refresh();$('install-skill').innerHTML=icon('check')+'موجودة في مكتبتك';toast('أُضيفت المهارة إلى مكتبتك');}catch(error){showError('dialog-error',error);$('install-skill').disabled=false;}
 });
+
+function updateProviderChoice(){
+ const nvidia=$('provider-choice').value==='nvidia';
+ $('nvidia-notice').classList.toggle('hidden',!nvidia);
+ $('start-session').disabled=!state.me?.authenticated||(nvidia&&!$('free-confirm').checked);
+}
+$('provider-choice').addEventListener('change',updateProviderChoice);
+$('free-confirm').addEventListener('change',updateProviderChoice);
+
 $('start-session').addEventListener('click',async()=>{
  if(!authenticated()||!state.selected)return;
  $('start-session').disabled=true;
  try{
-  const result=await api('/api/sessions',{skill_id:state.selected.id,mode:document.querySelector('input[name=mode]:checked').value});
+  const result=await api('/api/sessions',{skill_id:state.selected.id,mode:document.querySelector('input[name=mode]:checked').value,provider:$('provider-choice').value,free_endpoint_confirmed:$('free-confirm').checked});
   $('skill-dialog').close();await refresh();await openSession(result.session.id);
  }catch(error){showError('dialog-error',error);}
- finally{$('start-session').disabled=!state.me?.authenticated;}
+ finally{updateProviderChoice();}
 });
 $('chat-back').addEventListener('click',()=>switchView('chats'));
 $('export-chat').addEventListener('click',()=>{if(state.current)window.location.href='/api/sessions/'+state.current.id+'/export';});
