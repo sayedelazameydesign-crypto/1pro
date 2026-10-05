@@ -64,6 +64,9 @@ IP_AI_LIMIT_PER_HOUR = 120
 NVIDIA_PER_MINUTE = 10
 NVIDIA_PER_DAY = 100
 NVIDIA_MAX_ACTIVE = 2
+GLOBAL_COOLDOWN_USER_ID = ""
+GLOBAL_COOLDOWN_MAX_SECONDS = 300
+AI_RETRY_AFTER_MAX_SECONDS = 86400
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 24 * 1024
@@ -134,7 +137,9 @@ CREATE TABLE IF NOT EXISTS nvidia_attempts(
     elapsed_ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER);
 CREATE INDEX IF NOT EXISTS nvidia_attempt_time ON nvidia_attempts(created_at);
 CREATE TABLE IF NOT EXISTS provider_cooldown(
-    provider TEXT PRIMARY KEY, until_time REAL NOT NULL);
+    provider TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+    until_time REAL NOT NULL, PRIMARY KEY(provider, user_id));
+CREATE INDEX IF NOT EXISTS provider_cooldown_until ON provider_cooldown(until_time);
 """
 
 PG_SCHEMA = [
@@ -159,8 +164,109 @@ PG_SCHEMA = [
         created_at DOUBLE PRECISION NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
         elapsed_ms INTEGER, prompt_tokens INTEGER, completion_tokens INTEGER)""",
     "CREATE INDEX IF NOT EXISTS nvidia_attempt_time ON nvidia_attempts(created_at)",
-    "CREATE TABLE IF NOT EXISTS provider_cooldown(provider TEXT PRIMARY KEY, until_time DOUBLE PRECISION NOT NULL)",
+    """CREATE TABLE IF NOT EXISTS provider_cooldown(
+        provider TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+        until_time DOUBLE PRECISION NOT NULL, PRIMARY KEY(provider, user_id))""",
+    "CREATE INDEX IF NOT EXISTS provider_cooldown_until ON provider_cooldown(until_time)",
 ]
+
+
+def _sqlite_table_columns(db, table):
+    """Return SQLite PRAGMA table_info rows for migration checks."""
+    return list(db.execute(f"PRAGMA table_info({table})"))
+
+
+def _provider_cooldown_pk_columns(columns):
+    return [row[1] for row in sorted((row for row in columns if row[5]), key=lambda r: r[5])]
+
+
+def _migrate_sqlite_provider_cooldown(db):
+    """Move provider cooldowns from app-wide rows to provider+visitor rows.
+
+    Older SQLite databases used provider as the sole primary key. SQLite cannot
+    change primary keys in place, so rebuild the table while preserving the old
+    app-wide row under the reserved empty user id.
+    """
+    columns = _sqlite_table_columns(db, "provider_cooldown")
+    names = {row[1] for row in columns}
+    if "provider" not in names or "until_time" not in names:
+        return
+    if "user_id" in names and _provider_cooldown_pk_columns(columns) == ["provider", "user_id"]:
+        return
+
+    global_until_cap = time.time() + GLOBAL_COOLDOWN_MAX_SECONDS
+    db.execute("DROP TABLE IF EXISTS provider_cooldown_new")
+    db.execute("""CREATE TABLE provider_cooldown_new(
+        provider TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+        until_time REAL NOT NULL, PRIMARY KEY(provider, user_id))""")
+    if "user_id" in names:
+        db.execute("""INSERT OR REPLACE INTO provider_cooldown_new(provider,user_id,until_time)
+            SELECT provider, COALESCE(user_id, ''),
+                   CASE WHEN COALESCE(user_id, '') = ? AND MAX(until_time) > ?
+                        THEN ? ELSE MAX(until_time) END
+            FROM provider_cooldown
+            WHERE provider IS NOT NULL
+            GROUP BY provider, COALESCE(user_id, '')""",
+            (GLOBAL_COOLDOWN_USER_ID, global_until_cap, global_until_cap))
+    else:
+        db.execute("""INSERT OR REPLACE INTO provider_cooldown_new(provider,user_id,until_time)
+            SELECT provider, ?,
+                   CASE WHEN MAX(until_time) > ? THEN ? ELSE MAX(until_time) END
+            FROM provider_cooldown
+            WHERE provider IS NOT NULL
+            GROUP BY provider""",
+            (GLOBAL_COOLDOWN_USER_ID, global_until_cap, global_until_cap))
+    db.execute("DROP TABLE provider_cooldown")
+    db.execute("ALTER TABLE provider_cooldown_new RENAME TO provider_cooldown")
+    db.execute("CREATE INDEX IF NOT EXISTS provider_cooldown_until ON provider_cooldown(until_time)")
+
+
+def _postgres_primary_key_columns(db, table):
+    rows = db.execute("""SELECT kcu.column_name AS name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+         AND tc.table_name = kcu.table_name
+        WHERE tc.table_schema = current_schema()
+          AND tc.table_name = %s
+          AND tc.constraint_type = 'PRIMARY KEY'
+        ORDER BY kcu.ordinal_position""", (table,)).fetchall()
+    return [row["name"] for row in rows]
+
+
+def _postgres_constraint_name(db, table, constraint_type):
+    information_schema_type = {"p": "PRIMARY KEY"}.get(constraint_type, constraint_type)
+    return db.execute("""SELECT constraint_name AS conname
+        FROM information_schema.table_constraints
+        WHERE table_schema = current_schema()
+          AND table_name = %s
+          AND constraint_type = %s
+        LIMIT 1""", (table, information_schema_type)).fetchone()
+
+
+def _quote_pg_identifier(identifier):
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _migrate_postgres_provider_cooldown(db):
+    """Upgrade existing Postgres cooldown tables created before user scoping."""
+    has_user_id = db.execute("""SELECT EXISTS(
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'provider_cooldown'
+          AND column_name = 'user_id') AS ok""").fetchone()["ok"]
+    if not has_user_id:
+        db.execute("ALTER TABLE provider_cooldown ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        run(db, "UPDATE provider_cooldown SET until_time=LEAST(until_time, ?) WHERE user_id=?",
+            (time.time() + GLOBAL_COOLDOWN_MAX_SECONDS, GLOBAL_COOLDOWN_USER_ID))
+
+    if _postgres_primary_key_columns(db, "provider_cooldown") != ["provider", "user_id"]:
+        constraint = _postgres_constraint_name(db, "provider_cooldown", "p")
+        if constraint:
+            db.execute("ALTER TABLE provider_cooldown DROP CONSTRAINT " +
+                       _quote_pg_identifier(constraint["conname"]))
+        db.execute("ALTER TABLE provider_cooldown ADD PRIMARY KEY(provider, user_id)")
 
 
 def initialize():
@@ -168,6 +274,7 @@ def initialize():
         if POSTGRES:
             for statement in PG_SCHEMA:
                 db.execute(statement)
+            _migrate_postgres_provider_cooldown(db)
             return
         db.executescript(SQLITE_SCHEMA)
         # Idempotent, serialized migrations: preserve all old conversations.
@@ -178,6 +285,7 @@ def initialize():
         columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
         if "provider" not in columns:
             db.execute("ALTER TABLE messages ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'")
+        _migrate_sqlite_provider_cooldown(db)
 
 
 initialize()
@@ -588,7 +696,7 @@ def generate_reply(visitor_token, skill, mode, history, text, provider="gemini")
         if error.code in (402, 429):
             delay = error.headers.get("Retry-After", "") if error.headers else ""
             wait = int(delay) if delay.isdigit() else 60
-            wait = max(1, min(wait, 86400))
+            wait = max(1, min(wait, AI_RETRY_AFTER_MAX_SECONDS))
             raise GenerationFailure("بلغت " + config["label"] +
                 " حد الطلبات أو الحصة. انتظر وراجع حصة حسابك؛ لم يتم استخدام موفّر بديل.",
                 429, "ai_rate_limit", wait)
@@ -615,6 +723,71 @@ def generate_reply(visitor_token, skill, mode, history, text, provider="gemini")
     return reply[:24000]
 
 
+def cleanup_provider_cooldowns(db, now=None):
+    if now is None:
+        now = time.time()
+    run(db, "DELETE FROM provider_cooldown WHERE until_time<=?", (now,))
+
+
+def _cap_global_cooldown(db, provider, until_time, now):
+    capped_until = min(until_time, now + GLOBAL_COOLDOWN_MAX_SECONDS)
+    if capped_until < until_time:
+        run(db, """UPDATE provider_cooldown SET until_time=?
+                 WHERE provider=? AND user_id=? AND until_time=?""",
+            (capped_until, provider, GLOBAL_COOLDOWN_USER_ID, until_time))
+    return capped_until
+
+
+def active_provider_cooldown(db, provider, user_id, now):
+    """Return the active cooldown timestamp for this visitor or app-wide row."""
+    cleanup_provider_cooldowns(db, now)
+    rows = run(db, """SELECT user_id,until_time FROM provider_cooldown
+                     WHERE provider=? AND user_id IN (?,?)""",
+               (provider, user_id, GLOBAL_COOLDOWN_USER_ID)).fetchall()
+    active_until = 0
+    for row in rows:
+        until_time = row["until_time"]
+        if row["user_id"] == GLOBAL_COOLDOWN_USER_ID:
+            until_time = _cap_global_cooldown(db, provider, until_time, now)
+        if until_time > now:
+            active_until = max(active_until, until_time)
+    return active_until
+
+
+def upsert_provider_cooldown(db, provider, user_id, until_time):
+    if POSTGRES:
+        cooldown_sql = """INSERT INTO provider_cooldown(provider,user_id,until_time) VALUES(?,?,?)
+            ON CONFLICT(provider,user_id) DO UPDATE
+            SET until_time=GREATEST(
+                provider_cooldown.until_time, excluded.until_time)"""
+    else:
+        cooldown_sql = """INSERT INTO provider_cooldown(provider,user_id,until_time) VALUES(?,?,?)
+            ON CONFLICT(provider,user_id) DO UPDATE
+            SET until_time=MAX(provider_cooldown.until_time, excluded.until_time)"""
+    run(db, cooldown_sql, (provider, user_id, until_time))
+
+
+def upsert_nvidia_rate_limit_cooldowns(db, user_id, retry_after, now=None):
+    """Store NVIDIA 429/402 cooldowns with both safety scopes.
+
+    The visitor row keeps the full provider Retry-After, matching PromptQL's
+    personal-connection path. The reserved global row is deliberately short so
+    a possibly shared key/account gets a brief rest without reviving the old
+    app-wide 24h lockout.
+    """
+    if now is None:
+        now = time.time()
+    cleanup_provider_cooldowns(db, now)
+    upsert_provider_cooldown(db, "nvidia", user_id, now + retry_after)
+    upsert_provider_cooldown(
+        db, "nvidia", GLOBAL_COOLDOWN_USER_ID,
+        now + min(retry_after, GLOBAL_COOLDOWN_MAX_SECONDS))
+    global_row = run(db, "SELECT until_time FROM provider_cooldown WHERE provider=? AND user_id=?",
+                     ("nvidia", GLOBAL_COOLDOWN_USER_ID)).fetchone()
+    if global_row:
+        _cap_global_cooldown(db, "nvidia", global_row["until_time"], now)
+
+
 @app.post("/api/sessions/<sid>/message")
 def message(sid):
     data = request.get_json(silent=True) or {}
@@ -635,10 +808,10 @@ def message(sid):
         if "provider" in data and data["provider"] != row["provider"]:
             return fail("الموفّر ثابت لهذه الجلسة. ابدأ جلسة جديدة لتغيير الموفّر.", 400, "provider_immutable")
         if row["provider"] == "nvidia":
-            cooldown = run(db, "SELECT until_time FROM provider_cooldown WHERE provider='nvidia'").fetchone()
-            if cooldown and cooldown["until_time"] > now:
+            cooldown_until = active_provider_cooldown(db, "nvidia", uid, now)
+            if cooldown_until > now:
                 response, status = fail("NVIDIA طلب الانتظار قبل إعادة المحاولة. لا تحويل تلقائي.", 429, "nvidia_cooldown")
-                response.headers["Retry-After"] = str(max(1, int(cooldown["until_time"] - now)))
+                response.headers["Retry-After"] = str(max(1, int(cooldown_until - now)))
                 return response, status
             minute = run(db, "SELECT COUNT(1) AS n FROM nvidia_attempts WHERE created_at>?",
                          (now - 60,)).fetchone()["n"]
@@ -692,16 +865,8 @@ def message(sid):
         if error.retry_after:
             response.headers["Retry-After"] = str(error.retry_after)
             if row["provider"] == "nvidia":
-                if POSTGRES:
-                    cooldown_sql = """INSERT INTO provider_cooldown(provider,until_time) VALUES('nvidia',?)
-                        ON CONFLICT(provider) DO UPDATE
-                        SET until_time=GREATEST(
-                            provider_cooldown.until_time, excluded.until_time)"""
-                else:
-                    cooldown_sql = """INSERT INTO provider_cooldown(provider,until_time) VALUES('nvidia',?)
-                        ON CONFLICT(provider) DO UPDATE SET until_time=MAX(until_time,excluded.until_time)"""
                 with connect() as db:
-                    run(db, cooldown_sql, (time.time() + error.retry_after,))
+                    upsert_nvidia_rate_limit_cooldowns(db, uid, error.retry_after)
         return response, status
     finally:
         with connect() as db:
