@@ -67,11 +67,22 @@ NVIDIA_MAX_ACTIVE = 2
 GLOBAL_COOLDOWN_USER_ID = ""
 GLOBAL_COOLDOWN_MAX_SECONDS = 300
 AI_RETRY_AFTER_MAX_SECONDS = 86400
+# Used when a provider answers 429/402 without a usable Retry-After header.
+# Applies to the Gemini path as well; the NVIDIA path stores it per visitor and
+# caps the app-wide safety row at GLOBAL_COOLDOWN_MAX_SECONDS.
+DEFAULT_RETRY_AFTER_SECONDS = 60
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 24 * 1024
 app.config["JSON_AS_ASCII"] = False
 app.json.ensure_ascii = False
+
+if TRUST_PROMPTQL:
+    # The header below is read without any signature check, so this flag is only
+    # safe behind a gateway that overwrites client-supplied copies of it.
+    app.logger.warning(
+        "WAHA_TRUST_PROMPTQL=1: trusting the unsigned X-PromptQL-Visitor-Token "
+        "header. Never enable this on a public service.")
 
 try:
     import psycopg
@@ -85,7 +96,14 @@ def connect():
     if POSTGRES:
         if psycopg is None:
             raise RuntimeError("DATABASE_URL is set but psycopg is not installed")
-        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
+        # prepare_threshold=None: never let psycopg create server-side prepared
+        # statements. A transaction-mode pooler (Neon's pooled endpoint,
+        # PgBouncer) may hand a client connection to a different backend between
+        # transactions, which makes named prepared statements fail ("prepared
+        # statement already exists" / stale plan). This app opens short-lived
+        # connections, so disabling preparation costs nothing measurable.
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10,
+                               prepare_threshold=None)
     db = sqlite3.connect(DB_PATH, timeout=20)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
@@ -351,6 +369,10 @@ def identity():
             return {"id": user_id, "name": "مستخدم واحة", "token": token, "kind": "waha"}
     promptql_token = request.headers.get("X-PromptQL-Visitor-Token", "")
     if promptql_token and TRUST_PROMPTQL:
+        # SECURITY: only exp/sub are read; there is deliberately no signature
+        # verification because the token comes from the trusted PromptQL
+        # gateway. On a public host anyone could forge it, so WAHA_TRUST_PROMPTQL
+        # must stay unset outside PromptQL (see README).
         try:
             payload64 = promptql_token.split(".")[1]
             claims = json.loads(base64.urlsafe_b64decode(payload64 + "=" * (-len(payload64) % 4)))
@@ -695,7 +717,7 @@ def generate_reply(visitor_token, skill, mode, history, text, provider="gemini")
                 403, "ai_permission")
         if error.code in (402, 429):
             delay = error.headers.get("Retry-After", "") if error.headers else ""
-            wait = int(delay) if delay.isdigit() else 60
+            wait = int(delay) if delay.isdigit() else DEFAULT_RETRY_AFTER_SECONDS
             wait = max(1, min(wait, AI_RETRY_AFTER_MAX_SECONDS))
             raise GenerationFailure("بلغت " + config["label"] +
                 " حد الطلبات أو الحصة. انتظر وراجع حصة حسابك؛ لم يتم استخدام موفّر بديل.",
