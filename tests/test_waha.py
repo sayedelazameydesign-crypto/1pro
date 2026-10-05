@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -193,6 +194,23 @@ class StandaloneTests(unittest.TestCase):
     def test_cors_not_echoed_for_evil_origin(self):
         response = self.client.get("/api/skills", headers={"Origin": "https://evil.invalid"})
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+
+    def test_rate_limit_without_retry_after_uses_default(self):
+        """A 429 with no Retry-After header must still produce a bounded wait."""
+        data = self.register()
+        headers = self.auth_headers(data)
+        sid = self.client.post("/api/sessions", json={"skill_id": "SKL002",
+            "mode": "guided"}, headers=headers).get_json()["session"]["id"]
+        error = urllib.error.HTTPError("https://example.invalid", 429,
+                                       "Too Many Requests", None, None)
+        with patch.object(backend, "GEMINI_API_KEY", "test-only-key"), \
+                patch.object(backend.urllib.request, "urlopen", side_effect=error):
+            response = self.client.post(f"/api/sessions/{sid}/message",
+                json={"text": "مرحبا"}, headers=headers)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.get_json()["code"], "ai_rate_limit")
+        self.assertEqual(response.headers.get("Retry-After"),
+                         str(backend.DEFAULT_RETRY_AFTER_SECONDS))
 
     def test_ai_disabled_without_keys(self):
         data = self.register()

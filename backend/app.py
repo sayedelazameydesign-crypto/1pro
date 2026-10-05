@@ -67,6 +67,10 @@ NVIDIA_MAX_ACTIVE = 2
 GLOBAL_COOLDOWN_USER_ID = ""
 GLOBAL_COOLDOWN_MAX_SECONDS = 300
 AI_RETRY_AFTER_MAX_SECONDS = 86400
+# Used when a provider answers 429/402 without a usable Retry-After header.
+# Applies to the Gemini path as well; the NVIDIA path stores it per visitor and
+# caps the app-wide safety row at GLOBAL_COOLDOWN_MAX_SECONDS.
+DEFAULT_RETRY_AFTER_SECONDS = 60
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 24 * 1024
@@ -695,7 +699,7 @@ def generate_reply(visitor_token, skill, mode, history, text, provider="gemini")
                 403, "ai_permission")
         if error.code in (402, 429):
             delay = error.headers.get("Retry-After", "") if error.headers else ""
-            wait = int(delay) if delay.isdigit() else 60
+            wait = int(delay) if delay.isdigit() else DEFAULT_RETRY_AFTER_SECONDS
             wait = max(1, min(wait, AI_RETRY_AFTER_MAX_SECONDS))
             raise GenerationFailure("بلغت " + config["label"] +
                 " حد الطلبات أو الحصة. انتظر وراجع حصة حسابك؛ لم يتم استخدام موفّر بديل.",
