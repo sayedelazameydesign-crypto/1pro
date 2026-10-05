@@ -694,7 +694,9 @@ def message(sid):
             if row["provider"] == "nvidia":
                 if POSTGRES:
                     cooldown_sql = """INSERT INTO provider_cooldown(provider,until_time) VALUES('nvidia',?)
-                        ON CONFLICT(provider) DO UPDATE SET until_time=GREATEST(until_time,excluded.until_time)"""
+                        ON CONFLICT(provider) DO UPDATE
+                        SET until_time=GREATEST(
+                            provider_cooldown.until_time, excluded.until_time)"""
                 else:
                     cooldown_sql = """INSERT INTO provider_cooldown(provider,until_time) VALUES('nvidia',?)
                         ON CONFLICT(provider) DO UPDATE SET until_time=MAX(until_time,excluded.until_time)"""

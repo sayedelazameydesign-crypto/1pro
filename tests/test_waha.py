@@ -154,7 +154,7 @@ class StandaloneTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.get_json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["database"], "sqlite")
+        self.assertEqual(body["database"], "postgres" if backend.POSTGRES else "sqlite")
 
     def test_register_and_session_flow(self):
         data = self.register()

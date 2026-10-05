@@ -36,8 +36,9 @@ class NvidiaTests(unittest.TestCase):
     def test_global_budget(self):
         sid=self.create().get_json()["session"]["id"]
         with backend.connect() as db:
-            db.executemany("INSERT INTO nvidia_attempts(user_id,created_at,status) VALUES(?,?,?)",
-                           [("another-user",time.time(),"failed")]*10)
+            for _ in range(10):
+                backend.run(db, "INSERT INTO nvidia_attempts(user_id,created_at,status) VALUES(?,?,?)",
+                            ("another-user", time.time(), "failed"))
         with patch.object(backend,"generate_reply") as generate:
             r=self.send(sid)
         self.assertEqual(r.get_json()["code"],"nvidia_budget")
@@ -45,8 +46,9 @@ class NvidiaTests(unittest.TestCase):
     def test_budget_rolling24h(self):
         sid=self.create().get_json()["session"]["id"]
         with backend.connect() as db:
-            db.executemany("INSERT INTO nvidia_attempts(user_id,created_at,status) VALUES(?,?,?)",
-                           [("another-user",time.time()-120,"success")]*100)
+            for _ in range(100):
+                backend.run(db, "INSERT INTO nvidia_attempts(user_id,created_at,status) VALUES(?,?,?)",
+                            ("another-user", time.time() - 120, "success"))
         self.assertEqual(self.send(sid).get_json()["code"],"nvidia_budget")
     def test_cooldown_no_fallback(self):
         sid=self.create().get_json()["session"]["id"]
@@ -65,4 +67,4 @@ class NvidiaTests(unittest.TestCase):
             self.assertEqual(self.send(sid).status_code,502)
         self.assertEqual(self.client.get("/api/sessions/"+sid,headers=self.headers).get_json()["session"]["messages"],[])
         with backend.connect() as db:
-            self.assertEqual(db.execute("SELECT status FROM nvidia_attempts").fetchone()[0],"ai_unavailable")
+            self.assertEqual(db.execute("SELECT status FROM nvidia_attempts").fetchone()["status"], "ai_unavailable")
