@@ -1,0 +1,24 @@
+# Render blueprint for the standalone Waha backend.
+# Docs: deploy from repo root; the service lives in backend/.
+# The health check is deliberately /health (shallow): keep-alive pings must not
+# wake a scale-to-zero Neon Postgres and burn free-tier CU-hours.
+services:
+  - type: web
+    name: waha-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 90
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WAHA_SECRET
+        generateValue: true
+      - key: WAHA_ALLOWED_ORIGINS
+        value: https://sayedelazameydesign-crypto.github.io
