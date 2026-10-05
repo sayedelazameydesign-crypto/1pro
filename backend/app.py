@@ -77,6 +77,13 @@ app.config["MAX_CONTENT_LENGTH"] = 24 * 1024
 app.config["JSON_AS_ASCII"] = False
 app.json.ensure_ascii = False
 
+if TRUST_PROMPTQL:
+    # The header below is read without any signature check, so this flag is only
+    # safe behind a gateway that overwrites client-supplied copies of it.
+    app.logger.warning(
+        "WAHA_TRUST_PROMPTQL=1: trusting the unsigned X-PromptQL-Visitor-Token "
+        "header. Never enable this on a public service.")
+
 try:
     import psycopg
     from psycopg.rows import dict_row
@@ -89,7 +96,14 @@ def connect():
     if POSTGRES:
         if psycopg is None:
             raise RuntimeError("DATABASE_URL is set but psycopg is not installed")
-        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10)
+        # prepare_threshold=None: never let psycopg create server-side prepared
+        # statements. A transaction-mode pooler (Neon's pooled endpoint,
+        # PgBouncer) may hand a client connection to a different backend between
+        # transactions, which makes named prepared statements fail ("prepared
+        # statement already exists" / stale plan). This app opens short-lived
+        # connections, so disabling preparation costs nothing measurable.
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=10,
+                               prepare_threshold=None)
     db = sqlite3.connect(DB_PATH, timeout=20)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
@@ -355,6 +369,10 @@ def identity():
             return {"id": user_id, "name": "مستخدم واحة", "token": token, "kind": "waha"}
     promptql_token = request.headers.get("X-PromptQL-Visitor-Token", "")
     if promptql_token and TRUST_PROMPTQL:
+        # SECURITY: only exp/sub are read; there is deliberately no signature
+        # verification because the token comes from the trusted PromptQL
+        # gateway. On a public host anyone could forge it, so WAHA_TRUST_PROMPTQL
+        # must stay unset outside PromptQL (see README).
         try:
             payload64 = promptql_token.split(".")[1]
             claims = json.loads(base64.urlsafe_b64decode(payload64 + "=" * (-len(payload64) % 4)))

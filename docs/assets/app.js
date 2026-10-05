@@ -46,8 +46,34 @@ async function loadBackend(){
   if(base)backend.base=base.replace(/\/+$/,'');
  }catch(error){}
 }
+// The free Render plan sleeps after ~15 idle minutes, so the first request can
+// take ~50s. Give backend calls a long timeout, keep the user informed, and
+// retry instead of failing fast.
+const BACKEND_TIMEOUT_MS=80000;
+function serverNote(text){const el=document.querySelector('.ai-status small');if(el)el.textContent=text;}
+async function requestBackend(path,options){
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),BACKEND_TIMEOUT_MS);
+ try{
+  return await fetch(backend.base+path,{...options,signal:controller.signal});
+ }catch(error){
+  if(error&&error.name==='AbortError')throw new Error('انتهت مهلة الاتصال بخادم واحة، وقد يكون في وضع خمول. أعد المحاولة بعد لحظات.');
+  throw new Error('تعذّر الاتصال بخادم واحة. تحقق من اتصالك بالإنترنت ثم أعد المحاولة.');
+ }finally{clearTimeout(timer);}
+}
+async function wakeBackend(){
+ let lastError;
+ for(let attempt=0;attempt<3;attempt++){
+  if(attempt){
+   serverNote('جارٍ إيقاظ خادم واحة… (محاولة '+(attempt+1)+' من 3)');
+   await new Promise(resolve=>setTimeout(resolve,5000));
+  }
+  try{return await remoteMe();}catch(error){lastError=error;}
+ }
+ throw lastError;
+}
 async function registerVisitor(){
- const response=await fetch(backend.base+'/api/register',
+ const response=await requestBackend('/api/register',
   {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  let data={};
  try{data=await response.json();}catch(error){}
@@ -58,7 +84,7 @@ async function registerVisitor(){
 async function remoteMe(){
  const headers={};
  if(backend.token)headers['Authorization']='Bearer '+backend.token;
- const response=await fetch(backend.base+'/api/me',{headers});
+ const response=await requestBackend('/api/me',{headers});
  if(!response.ok)throw new Error('تعذّر الاتصال بخادم واحة.');
  return response.json();
 }
@@ -74,7 +100,7 @@ async function remote(path,body,retried){
  if(backend.token)headers['Authorization']='Bearer '+backend.token;
  if(body!==undefined){headers['Content-Type']='application/json';headers['X-Waha-CSRF']=backend.csrf||'';}
  const options=body===undefined?{headers}:{method:'POST',headers,body:JSON.stringify(body)};
- const response=await fetch(backend.base+path,options);
+ const response=await requestBackend(path,options);
  if(!response.ok){
   let data={};
   try{data=await response.json();}catch(error){}
@@ -109,7 +135,7 @@ function applyBackendUi(){
  const banner=document.querySelector('#identity-banner p');
  const aiSmall=document.querySelector('.ai-status small');
  if(backend.status==='unreachable'){
-  if(banner)banner.textContent='تعذّر الوصول إلى خادم واحة الآن؛ تعمل الواجهة بوضع القراءة فقط (بحث وتنزيل).';
+  if(banner)banner.textContent='تعذّر الوصول إلى خادم واحة الآن؛ الخادم المجاني ينام بعد فترة خمول، وأول طلب بعده قد يستغرق حتى دقيقة. حدّث الصفحة بعد قليل؛ البحث والتنزيل يعملان الآن.';
   if(aiSmall)aiSmall.textContent='الخادم غير متاح';
   return;
  }
@@ -297,15 +323,16 @@ async function init(){
  try{
   await loadBackend();
   if(backend.base){
+   const notice=setTimeout(()=>serverNote('جارٍ الاتصال بخادم واحة… أول طلب بعد الخمول قد يستغرق حتى دقيقة.'),2500);
    try{
     if(!backend.token)await registerVisitor();
-    state.me=await remoteMe();
+    state.me=await wakeBackend();
     backend.status='online';
    }catch(error){
     state.me={authenticated:false,user:null,csrf:null,model:null,provider:null,ai_enabled:false};
     backend.status='unreachable';
-    toast('تعذّر الوصول إلى خادم واحة؛ تعمل الواجهة بوضع القراءة فقط.');
-   }
+    toast('تعذّر الوصول إلى خادم واحة الآن؛ إن كان في وضع خمول فسيستغرق أول طلب حتى دقيقة. حدّث الصفحة بعد قليل.');
+   }finally{clearTimeout(notice);}
   }else{
    state.me=await api('/api/me');
   }

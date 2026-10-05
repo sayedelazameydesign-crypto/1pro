@@ -30,7 +30,7 @@ https://github.com/sayedelazameydesign-crypto/1pro
 backend/             تطبيق Flask الحالي وملف إعداد غير سري
 docs/                الواجهة الثابتة التي يمكن نشرها على Pages
 skills/<ID>/         المصدر الأساسي للمهارات الست
-scripts/             تحقق وبناء فهرس ثابت
+scripts/             تحقق وبناء فهرس ثابت + smoke للخادم المستقل
 tests/               اختبارات بدون اتصال AI أو أسرار
 .github/workflows/   CI + نشر Pages يدوي بإذن المالك
 .github/ISSUE_TEMPLATE/
@@ -119,26 +119,43 @@ git push -u origin main
 
 | المتغير | القيمة | ملاحظات |
 |---|---|---|
-| `DATABASE_URL` | من لوحة Neon | اتصال Postgres؛ يفعّل مسار قاعدة البيانات الخارجي |
-| `GEMINI_API_KEY` | من Google AI Studio | لا تضعه في المستودع أبداً |
-| `WAHA_SECRET` | نص عشوائي طويل | توقيع التوكنات وCSRF؛ بدونه يتسجل المستخدمون خروجاً عند كل إعادة نشر (يُولّد تلقائياً في `render.yaml`) |
-| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل |
+| `DATABASE_URL` | من لوحة Neon (رابط **pooled**) | أبقِ `sslmode=require`. إذا فشل الاتصال احذف `channel_binding=require` (قد لا يدعمه driver قديم)؛ والكود يعطّل prepared statements عبر `prepare_threshold=None` ليتوافق مع pgbouncer في وضع transaction |
+| `GEMINI_API_KEY` | من Google AI Studio | لا تضعه في المستودع أبداً ولا في أي محادثة أو لقطة شاشة؛ إن انكشف فاستبدله (rotate) فوراً من AI Studio |
+| `WAHA_SECRET` | **لا تضبطه يدويًا عند استخدام Blueprint** | `render.yaml` يعلن `generateValue: true` فيولّده Render مرة واحدة ويثبّته عبر النشرات؛ إدخاله يدويًا يتجاوز المولَّد أو يتعارض معه. خارجه (تشغيل محلي) يُنشأ ملف جانبي مؤقت يضيع مع كل نشر فتُبطَل جلسات الزوار |
+| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
-| `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | وضع PromptQL فقط | يفعّل مسار البوابة القديم بدل الوضع المستقل |
+| `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | **وضع PromptQL فقط — لا تضبط أياً منهما في النشر المستقل** | ⚠️ مع `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة `X-PromptQL-Visitor-Token` **بدون تحقق توقيع** (يُفحص `exp` و`sub` فقط، دالة `identity` في `backend/app.py`)، فأي زائر يستطيع تزوير الهوية وتجاوز cooldown/الحدود. كذلك `PROMPTQL_PLATFORM_API_URL` وحده يحوّل مسار AI إلى البوابة ويُلغي مسار `GEMINI_API_KEY`. في النشر المستقل: اترك المتغيرين غير مضبوطين |
 
 أمر البدء: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 90`
 (المهلة 90 ثانية لأن طلب Gemini الواحد قد يستغرق حتى 75 ثانية).
 
-### خطوات مختصرة
+### خطوات مختصرة (بهذا الترتيب)
 
-1. أنشئ مشروعاً وقاعدة بيانات في Neon وانسخ `DATABASE_URL`.
-2. أنشئ Web Service على Render من هذا المستودع (جذر الخدمة `backend/`)
-   أو استخدم Blueprint من `render.yaml`، Build: `pip install -r requirements.txt`.
-3. اضبط متغيرات البيئة أعلاه في لوحة Render.
-4. ضع عنوان الخادم في `docs/data/config.json` حقل `api_base`
-   (مثال: `https://waha-backend.onrender.com`)، ثم أعد تشغيل مهمة نشر
-   Pages اليدوية.
-5. Smoke test: `/health` ثم `/readyz` ثم محادثة واحدة + تصدير + حذف.
+1. **Neon**: أنشئ المشروع والقاعدة، وانسخ رابط **pooled** مع `sslmode=require`.
+   `/readyz` بعد النشر هو الفحص الذي يكشف أي مشكلة في الرابط أو في الـdriver.
+2. **Render Blueprint**: أنشئ الخدمة من `render.yaml`
+   (`DATABASE_URL` + `GEMINI_API_KEY` + `WAHA_ALLOWED_ORIGINS`؛ بدون
+   `WAHA_TRUST_PROMPTQL`؛ و`WAHA_SECRET` يولّده Render تلقائياً).
+3. **Smoke للخادم**:
+
+   ```bash
+   scripts/smoke.sh https://<service>.onrender.com
+   curl -sS --max-time 90 https://<service>.onrender.com/health
+   curl -sS --max-time 90 -i https://<service>.onrender.com/readyz   # 204 بلا جسم
+   ```
+
+   استخدم `--max-time 90` دائماً: أول طلب بعد خمول Render المجاني قد يستغرق
+   ~50 ثانية. نجاح `/readyz` بـ204 يعني أن `initialize()` بنى الجداول على
+   قاعدة Neon الفارغة.
+4. **`docs/data/config.json`**: ضع عنوان الخادم في `api_base` ثم commit وPR
+   (CI يشغّل فحص الفهرس والاختبارات و`node --check`).
+5. **Pages يدوياً**: Actions → «Publish static skill catalog to Pages» →
+   Run workflow، ثم فحص متصفح: أول زيارة بعد خمول تُظهر رسالة
+   «جارٍ إيقاظ خادم واحة…» وتعيد المحاولة تلقائياً، ثم أنشئ جلسة وأرسل رسالة
+   وجرّب التصدير والحذف.
+6. بالتوازي أو بعده: PR صغير للثابت `DEFAULT_RETRY_AFTER_SECONDS` + سطر توثيق.
+   هذا ليس شرطاً للنشر في وضع Gemini المستقل، لأن مسار NVIDIA (صاحب الحد
+   الزمني) معطّل هناك بـ`503 nvidia_requires_gateway`.
 
 ### ملاحظات التشغيل المجاني
 
@@ -148,6 +165,12 @@ git push -u origin main
 - أول طلب بعد الخمول بطيء (استيقاظ Render ثم استيقاظ Neon). إن أردت
   تقليل ذلك، وجّه ping خارجياً (مثل UptimeRobot) إلى `/health` كل
   10–14 دقيقة — وليس إلى `/readyz`.
+- واجهة `docs/` مهيأة لهذا الخمول: كل طلب خلفي بمهلة 80 ثانية، مع رسالة
+  «جارٍ إيقاظ خادم واحة…» وإعادة محاولة تلقائية (3 مرات/5 ثوانٍ) قبل إعلان
+  «الخادم غير متاح»؛ لا تظهر النتيجة «غير متاح» بسبب cold start عابر.
+- فحص الاتصال من جهة الخادم: `/health` لا يلمس Neon، و`/readyz` هو الفحص
+  العميق الوحيد. إن رجع `/readyz` بخطأ اتصال فراجع `DATABASE_URL`
+  (`sslmode=require` أولاً، ثم احذف `channel_binding=require` إن لزم).
 - حدود النشر المستقل: 5 تسجيلات جديدة/ساعة لكل IP، و30 طلب AI/ساعة لكل
   مستخدم، و120 طلب AI/ساعة لكل IP.
 - البيانات تُحفظ في Postgres، ولا شيء مهم على قرص الخادم المؤقت.
@@ -156,7 +179,12 @@ git push -u origin main
 
 `backend/app.py` يتوقع أن يكون الوصول عبر بوابة PromptQL الموثوقة، وأن
 تزوده بهوية الزائر وتوكن محدود لكل طلب. لا يتحقق التطبيق من توقيع أي
-توكن عشوائي بنفسه؛ **لا تعرضه مباشرة للإنترنت ولا تقبل ترويسة الهوية من متصفح غير موثوق**.
+توكن عشوائي بنفسه: عند `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة
+`X-PromptQL-Visitor-Token` بفك الـpayload والتحقق من `exp` و`sub` فقط، بلا
+أي تحقق توقيع (دالة `identity`). لذلك أي زائر قادر على تزوير `sub` وتجاوز
+حدود التطبيق، و**لا يجوز تفعيل هذا العلم على خدمة عامة**؛
+**لا تعرض التطبيق مباشرة للإنترنت ولا تقبل ترويسة الهوية من متصفح غير موثوق**.
+عند الإقلاع يطبع التطبيق تحذيراً في السجل إذا كان العلم مفعّلاً.
 
 إعداد الخدمة يحتاج عنوان Platform API الصحيح من بيئة PromptQL،
 وموافقة الزائر على التكامل `__gemini-web-search`. المثال في
