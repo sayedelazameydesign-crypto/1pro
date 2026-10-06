@@ -18,6 +18,13 @@ from urllib.parse import urlsplit
 from flask import Flask, g, jsonify, request, send_file
 
 ROOT = Path(__file__).resolve().parent
+# R1 writes the retrieval index at repo root; a deployment that ships only this
+# directory can point WAHA_RAG_DIR at a copy. First existing candidate wins, and a
+# missing index is a 503 -- never an empty "success".
+_RAG_CANDIDATES = (ROOT.parent / "data/rag", ROOT / "data/rag")
+RAG_INDEX_DIR = (Path(os.environ["WAHA_RAG_DIR"]) if os.environ.get("WAHA_RAG_DIR")
+                 else next((path for path in _RAG_CANDIDATES
+                            if (path / "index.json").exists()), _RAG_CANDIDATES[0]))
 # The agent package lives next to this module. Under `gunicorn app:app`,
 # `python app.py`, the Vercel wrapper and the test-suite the working directory
 # differs, so make the import independent of it.
@@ -28,6 +35,7 @@ from agent.config import AgentConfig            # noqa: E402
 from agent.providers import GeminiProvider, GatewayProvider  # noqa: E402
 from agent.service import Service               # noqa: E402
 from agent.store import Store                   # noqa: E402
+import rag_search                          # noqa: E402  (R2: lexical search over data/rag)
 from agent.runtime import Agent, Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
 from agent.tools import build_registry          # noqa: E402
 
@@ -622,6 +630,7 @@ def health():
     # Deliberately shallow: no DB query, so keep-alive pings do not wake a
     # scale-to-zero Postgres. Use /readyz for a deep check.
     return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode(),
+                   rag=rag_search.status(RAG_INDEX_DIR),
                    agent={"workers": AgentConfig.WORKERS, "queue": agent_service.queue_size(),
                           "state": agent_state(), "inline": agent_forces_inline()})
 
@@ -709,6 +718,45 @@ def install(skill_id):
         run(db, "INSERT OR IGNORE INTO installs VALUES(?,?,?)",
             (g.visitor["id"], skill_id, time.time()))
     return jsonify(ok=True)
+
+
+# --- RAG search (R2) -----------------------------------------------------------
+# `/api/skills?q=` above stays what it always was: a catalog filter. This endpoint
+# is different in kind -- it returns chunks of R1's corpus with their citations --
+# so the two must never be conflated by a caller. Read-only, no model call, no DB
+# write, and it fails closed (503) when the committed index is absent.
+@app.get("/api/search")
+def rag_search_endpoint():
+    query = (request.args.get("q") or "").strip()
+    if not query:
+        return fail("أرسل q للسؤال.", 400, "missing_query")
+    if len(query) > rag_search.MAX_QUERY_CHARS:
+        return fail(f"السؤال أطول من {rag_search.MAX_QUERY_CHARS} حرفاً.", 400, "query_too_long")
+    try:
+        k = int(request.args.get("k") or rag_search.DEFAULT_RESULTS)
+    except ValueError:
+        return fail("k رقم.", 400, "invalid_k")
+    if k < 1:
+        return fail("k يجب أن يكون 1 أو أكثر.", 400, "invalid_k")
+    # Over-large k is clamped, not rejected: the caller asked for more, not for an error.
+    k = min(k, rag_search.MAX_RESULTS)
+
+    def multi(name):
+        raw = request.args.get(name) or ""
+        return [piece.strip() for piece in raw.split(",") if piece.strip()][:20]
+
+    sections, skills = multi("section"), multi("skill")
+    try:
+        payload = rag_search.search(query, k=k, sections=sections, skills=skills,
+                                    index_dir=RAG_INDEX_DIR)
+    except rag_search.RagSearchUnavailable as error:
+        response = jsonify(error=str(error), code="rag_index_missing",
+                           hint="python scripts/rag_index.py ثم أعيد النشر", query=query)
+        return response, 503
+    # No timing values anywhere in the body: two equal queries must return
+    # byte-identical JSON so R4 can snapshot results. Cache-Control is decided
+    # centrally by security_headers (no-store) and is deliberately not forked here.
+    return jsonify(payload)
 
 
 def session_view(db, row, include_messages=False):

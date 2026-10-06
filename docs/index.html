@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>واحة · مكتبة المهارات على GitHub Pages</title>
   <link rel="stylesheet" href="./assets/styles.css">
+  <script src="./assets/search.js" defer></script>
   <script src="./assets/app.js" defer></script>
 </head>
 <body>
@@ -38,6 +39,7 @@
         <section id="catalog" class="catalog">
           <div class="section-heading"><div><div class="eyebrow small" id="catalog-kicker">ابدأ بشيء يثير فضولك</div><h2 id="catalog-title">اختر مهارتك التالية</h2></div><span class="count-label" id="results-count">6 مهارات</span></div>
           <div class="filters"><div class="search-field"><span data-icon="search"></span><input id="search" type="search" placeholder="ابحث عن مهارة أو موضوع…" aria-label="ابحث عن مهارة"></div><select id="category" aria-label="الفئة"><option value="">كل الفئات</option><option>كتابة</option><option>برمجة</option><option>إنتاجية</option><option>تصميم</option><option>بيانات</option></select><select id="difficulty" aria-label="المستوى"><option value="">كل المستويات</option><option>مبتدئ</option><option>متوسط</option></select></div>
+          <div class="rag-panel hidden" id="rag-panel" aria-live="polite" aria-label="نتائج الاسترجاع"></div>
           <div class="skill-grid" id="skill-grid" aria-live="polite"><div class="empty-state">جارٍ تحميل المهارات…</div></div>
         </section>
         <div class="bottom-note"><span data-icon="shield"></span><p>نسخة Pages ثابتة؛ لا تجمع مفاتيح ولا ترسل طلبات إلى Gemini إلا بعد ربط خادم واحة.<br><span>المهارات عينات عربية، والتنزيل يحفظ ملف JSON فقط. التطبيق الكامل يعمل منفصلاً في بيئة PromptQL.</span></p><span class="handwritten">كل بداية تستحق.</span></div>

@@ -108,6 +108,24 @@ git push -u origin main
 
 لا ملف CNAME قبل اختيار نطاق وتهيئة DNS.
 
+## طبقة الاسترجاع · R2 (بحث معجمي فوق فهرس Waha)
+
+`backend/rag_search.py` يقرأ `data/rag/` كما هو — لا مخطط موازٍ، لا إعادة توليد، لا
+استدعاء شبكة ولا قاعدة بيانات في مسار البحث. BM25 فوق `postings` المودَعة، بوزن للقسم
+داخل التراكم (`prompt`/`description` 1.15 مقابل `starter` 0.85) وعبارات إيقافية تُطبَّق
+على الاستعلام وحده. قواعد الطيّ نفسها في `backend/rag_text.py` يستوردها R1 وR2 معًا، لأن
+نسخة ثانية من المجزّئ كانت ستختلف عن `postings` بصمت.
+
+| المسار | الوظيفة |
+|---|---|
+| `GET /api/search?q=&k=&section=&skill=` | نتائج مرتبة فوق فهرس R1: `citation` و`chunk_id` حرفيان من المقطع، مع `score` و`explain` و`coverage`. `k` حتى 20 (الأكثر يُقصّ لا يُرفض). **لا عتبة قرار**: `no_answer.decision` إما `deferred` أو `unsearchable`، ومن يملك العتبة هو `data/rag/eval-report.json` في R4 |
+
+بلا فهرس → `503 rag_index_missing` مع السبب في `/health.rag.reason`. والواجهة
+(`docs/assets/search.js`) تسمّي مصدرها دائمًا: `RAG_LOCAL` من الخادم، أو
+`BROWSER_FALLBACK` عند انقطاعه أو انتهاء المهلة (2.5 ثانية) فتعرض التصفية المحلية
+موسومةً صراحة بأنها **ليست استرجاع RAG** وبلا قائمة «نتائج»، أو `NONE` بلا `api_base`.
+لا يُمزج المساران في قائمة واحدة، ولا يُرسَل الكتالوج إلى المتصفح.
+
 ## طبقة الوكيل · Agent Runtime
 
 `backend/agent/` تحوّل المحادثة أحادية الرد إلى حلقة: **افهم → خطّط → نفّذ → راقب →
@@ -182,6 +200,7 @@ python -m http.server 8080 --directory docs    # http://localhost:8080 → مس�
 | `WAHA_SECRET` | **لا تضبطه يدويًا عند استخدام Blueprint** | `render.yaml` يعلن `generateValue: true` فيولّده Render مرة واحدة ويثبّته عبر النشرات؛ إدخاله يدويًا يتجاوز المولَّد أو يتعارض معه. خارجه (تشغيل محلي) يُنشأ ملف جانبي مؤقت يضيع مع كل نشر فتُبطَل جلسات الزوار |
 | `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
+| `WAHA_RAG_DIR` | اختياري (`<repo>/data/rag`) | دليل فهرس R1 الذي يقرأه `GET /api/search`. يُضبط في اختبار أو نسخة بديلة فقط؛ مساره الخاطئ يرجع `503 rag_index_missing` ولا يُبدَّل بنتائج مُختَرَعة |
 | `AGENT_*` | اختياري | ميزانيات طبقة الوكيل وحدودها؛ الجدول الكامل في «طبقة الوكيل». قبل النشر شغّل `python scripts/deploy_doctor.py --target render` |
 | `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | **وضع PromptQL فقط — لا تضبط أياً منهما في النشر المستقل** | ⚠️ مع `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة `X-PromptQL-Visitor-Token` **بدون تحقق توقيع** (يُفحص `exp` و`sub` فقط، دالة `identity` في `backend/app.py`)، فأي زائر يستطيع تزوير الهوية وتجاوز cooldown/الحدود. كذلك `PROMPTQL_PLATFORM_API_URL` وحده يحوّل مسار AI إلى البوابة ويُلغي مسار `GEMINI_API_KEY`. في النشر المستقل: اترك المتغيرين غير مضبوطين |
 
@@ -222,7 +241,8 @@ python -m http.server 8080 --directory docs    # http://localhost:8080 → مس�
 
 - `/health` **لا يلمس قاعدة البيانات عمداً** حتى لا يوقظ Neon كل بضع
   دقائق ويحرق ساعات الحوسبة المجانية؛ استخدمه لفحص الصحة، واستخدم
-  `/readyz` للفحص العميق عند الحاجة فقط.
+  `/readyz` للفحص العميق عند الحاجة فقط. و`/api/search` مثله: يقرأ ملفًا مودَعًا
+  في المستودع، فلا يوقظ Neon ولا يمسّ رصيد ساعة الحوسبة.
 - أول طلب بعد الخمول بطيء (استيقاظ Render ثم استيقاظ Neon). إن أردت
   تقليل ذلك، وجّه ping خارجياً (مثل UptimeRobot) إلى `/health` كل
   10–14 دقيقة — وليس إلى `/readyz`.

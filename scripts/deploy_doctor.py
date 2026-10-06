@@ -214,6 +214,18 @@ def check(env, target="render"):
                                   "Fluid Compute).")
                 if not data.get("rewrites"):
                     warnings.append("لا rewrites في vercel.json؛ المسارات الفرعية لن تصل إلى Flask.")
+                # R2 reads the committed index at request time; excluding data/ turns
+                # /api/search into a 503 on Vercel while the repo's own tests stay green.
+                raw = ((data.get("functions") or {}).get("api/index.py") or {}).get("excludeFiles") or []
+                if isinstance(raw, str):        # Vercel also accepts "{a/**,b/**}"
+                    raw = raw.strip("{}")
+                excluded = {item.strip() for item in raw.split(",") if item.strip()} \
+                    if isinstance(raw, str) else {str(item) for item in raw}
+                if "data/**" in excluded or "data" in excluded:
+                    errors.append("vercel.json يستبعد data/**: /api/search لن يجد data/rag/index.json "
+                                  "ويرجع 503 على Vercel رغم نجاح الاختبارات في المستودع.")
+                if "backend/**" in excluded or "backend" in excluded:
+                    errors.append("vercel.json يستبعد backend/**: التطبيق وتوكن RAG لن يوجد أيهما.")
         notes.append("Vercel Hobby للاستخدام الشخصي غير التجاري فقط، و/tmp وحده قابل للكتابة.")
 
     # 9) The agent knobs fail loudly at import; surface that here too.

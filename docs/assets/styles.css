@@ -88,3 +88,23 @@ dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);p
 .memory-form select{border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:9px;font:inherit;font-size:10.5px;color:var(--ink)}
 .memory-form button{font-size:10px;padding:8px 11px}
 @media(max-width:1080px){.agent-grid{grid-template-columns:1fr}}
+.rag-panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 15px;margin:0 0 18px}
+.rag-head{display:flex;flex-wrap:wrap;align-items:center;gap:9px}
+.rag-badge{display:inline-flex;align-items:center;gap:6px;font-size:9.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.rag-badge .icon{width:13px;height:13px}
+.rag-local{background:var(--green-soft);color:var(--green-strong);border-color:#a5b99c}
+.rag-fallback{background:var(--sand);color:var(--ink)}
+.rag-note,.rag-meta{font-size:9.5px;color:var(--muted);line-height:1.7}
+.rag-hits{display:grid;gap:8px;margin-top:11px}
+.rag-hit{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
+.rag-hit-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rag-hit-top strong{font-size:12.5px;font-weight:500}
+.rag-score{font-family:ui-monospace,monospace;font-size:9.5px;color:var(--muted)}
+.rag-hit p{font-size:11px;color:var(--muted);line-height:1.9;margin-top:5px;unicode-bidi:plaintext}
+.rag-hit-foot{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px}
+.rag-cite{font-family:ui-monospace,monospace;font-size:9.5px;background:var(--green-soft);border-radius:4px;padding:2px 7px;color:var(--green-strong)}
+.rag-cite-none{background:var(--bg);color:var(--muted);border:1px dashed var(--line)}
+.rag-section{font-size:9px;color:var(--muted)}
+.rag-open{margin-inline-start:auto;display:inline-flex;align-items:center;gap:6px;font-size:9.5px;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--ink)}
+.rag-open .icon{width:13px;height:13px}
+@media(max-width:640px){.rag-open{margin-inline-start:0}}

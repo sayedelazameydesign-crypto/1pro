@@ -10,6 +10,8 @@ GitHub Pages  (docs/)            واجهة عربية RTL ثابتة، تُقر
       ▼
 Flask app     (backend/app.py)   هوية زائر HMAC · CSRF · CORS · حدود الساعة · cooldown
       │
+      ├── rag_search.py · rag_text.py   GET /api/search — BM25 قراءةً فقط من data/rag/ المودَع
+      │
       ▼
 Agent Runtime (backend/agent/)   plan → act → observe → reflect → report
       │
@@ -22,6 +24,13 @@ Agent Runtime (backend/agent/)   plan → act → observe → reflect → report
       ▼
 Neon Postgres                    خارج القرص المؤقت؛ لا شيء مهم على نظام الملفات
 ```
+
+**الاسترجاع طبقة مستقلة، لا ملحقة بالمحادثة.** `backend/rag_search.py` يستهلك فهرس R1
+(`data/rag/index.json` + `corpus.jsonl`) كما هو: لا مخطط موازٍ، لا إعادة توليد، لا شبكة،
+لا قراءة قاعدة بيانات — حتى لا يوقظ البحثُ Neon ولا يحرق رصيد الساعة. قواعد طيّ النص في
+`backend/rag_text.py` يستوردها الباني (R1) والمسترجِع (R2) من نفس الملف، لأن نسختين من
+المجزّئ تعني مفاتيح استعلام لا تلتقي بـ`postings` — عيب يصمت حتى تسوء الجودة ولا يفشل أي
+اختبار. الواجهة تسمّي مصدرها دائمًا: `RAG_LOCAL` / `BROWSER_FALLBACK` / `NONE`.
 
 القاعدة الحاكمة: **`agent/` لا تعرف Flask ولا Vendor.** تُحقن بكل شيء من `app.py`
 (`Store` يستقبل محوّل `connect/run/insert_returning_id`، و`Agent` يستقبل
@@ -55,6 +64,10 @@ Neon Postgres                    خارج القرص المؤقت؛ لا شيء 
 | `WAHA_TRUST_PROMPTQL=1` على خدمة عامة | الترويسة تُقرأ بلا توقيع؛ `deploy_doctor` يرفضها |
 | ذاكرة بلا سقف | `agent_memory` يدور عند `AGENT_MEMORY_MAX_ITEMS`، ولا يُقرأ منه إلا آخر 8 عناصر كسياق |
 | وعد طاقة | `/api/agent/config` يُعلن `guaranteed_capacity: false`؛ الخطة المجانية مشتركة |
+| عتبة «لا إجابة» في زمن الاسترجاع | R2 يرجّع درجة + metadata ويكتب `no_answer.decision: "deferred"`؛ العتبة يكتبها R4 في `data/rag/eval-report.json` لا مستخدمٌ للمعجم في `app.py` |
+| توسيع الاستعلام بالجذر الكامل | مقيسٌ لا متوهَّمًا: `stem()` أعاد «يوميه/يومين» من «اليوم» فأطاع سؤال سعر الصرف على مهارة إدارة الوقت. بقي نزع «ال» التعريف وحده، بوزن 0.45 ومعروَضًا في `inferred_terms` و`coverage: 0.0` |
+| جدول `attempts` لـ`/api/search` | العدّاد مشترك مع المحادثة (30 طلب AI/ساعة)؛ تسجيل كل بحث كان يأكل رصيد الزائر بلا مقابل — البحث بلا حالة أصلًا |
+| إرسال `data/rag/` أو الكتالوج إلى المتصفح | الاسترجاع يبقى في الخادم؛ المتصفح يسمّي تصفيته المحلية `BROWSER_FALLBACK` ولا يخلطها بنتائج R1 |
 
 ## 4. الحلقة والميزانيات
 

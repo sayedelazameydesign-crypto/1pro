@@ -22,6 +22,7 @@ jobs:
       - run: python scripts/rag_index.py --self-test
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check backend/static/app.js
+      - run: node tests/browser_search.test.mjs
       # The deploy doctor validates the operator's environment offline; CI only
       # proves the checker itself, since no real keys exist here.
       - run: python scripts/deploy_doctor.py --self-test
@@ -58,6 +59,7 @@ jobs:
       - run: python scripts/rag_index.py --self-test
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check backend/static/app.js
+      - run: node tests/browser_search.test.mjs
       # The deploy doctor validates the operator's environment offline; CI only
       # proves the checker itself, since no real keys exist here.
       - run: python scripts/deploy_doctor.py --self-test

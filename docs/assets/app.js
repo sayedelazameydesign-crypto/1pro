@@ -198,6 +198,51 @@ function renderSkills(){
  }
  $('skill-grid').innerHTML=filtered.map(s=>`<article class="skill-card"><div class="card-top"><div class="skill-icon ${escapeHtml(s.color)}">${icon(s.icon)}</div><span class="badge ${s.installed?'installed-tag':''}">${s.installed?'في مكتبتك':'مهارة تجريبية'}</span></div><h3>${escapeHtml(s.name)}</h3><p>${escapeHtml(s.description)}</p><div class="skill-meta"><span>${escapeHtml(s.category)}</span><span class="dot"></span><span>${escapeHtml(s.difficulty)}</span><span class="dot"></span><span>تعلّم تفاعلي</span></div><div class="card-footer"><button class="card-action" data-skill="${s.id}">استكشف المهارة${icon('arrow')}</button><button class="icon-button" data-download="${s.id}" aria-label="تنزيل ${escapeHtml(s.name)} JSON">${icon('download')}</button></div></article>`).join('');
 }
+// R2: retrieval happens on the server over R1's index. The page adds no ranking of
+// its own -- it labels what it got. BROWSER_FALLBACK deliberately shows no list: the
+// filtered cards below already are that result, and repeating them as "hits" would
+// read like retrieval. NONE means no source, and the page says so instead of guessing.
+const rag={mode:'NONE',results:[],note:'',payload:null,seq:0};
+let ragTimer;
+function ragBadge(mode){
+ if(mode==='RAG_LOCAL')return '<span class="rag-badge rag-local">'+icon('layers')+'استرجاع من فهرس Waha</span>';
+ if(mode==='BROWSER_FALLBACK')return '<span class="rag-badge rag-fallback">'+icon('search')+'تصفية المتصفح — ليست استرجاع RAG</span>';
+ return '<span class="rag-badge">بلا مصدر</span>';
+}
+function ragRow(row){
+ const score=typeof row.score==='number'?'<span class="rag-score">'+row.score.toFixed(2)+'</span>':'';
+ const cite=row.citation?'<code class="rag-cite">'+escapeHtml(row.citation)+'</code>':'<span class="rag-cite rag-cite-none">بلا استشهاد</span>';
+ const section=row.section?'<span class="rag-section">'+escapeHtml(row.section_label||row.section)+'</span>':'';
+ const open=row.skill_id?'<button class="rag-open" data-rag-skill="'+escapeHtml(row.skill_id)+'">افتح المهارة'+icon('arrow')+'</button>':'';
+ return '<div class="rag-hit"><div class="rag-hit-top"><strong>'+escapeHtml(row.title||row.skill_id||'')+'</strong>'+score+'</div><p>'+escapeHtml(row.snippet||'')+'</p><div class="rag-hit-foot">'+cite+section+open+'</div></div>';
+}
+function renderRag(){
+ const panel=$('rag-panel');
+ if(!panel)return;
+ if(!rag.results.length&&!rag.note){panel.classList.add('hidden');panel.innerHTML='';return;}
+ const meta=rag.payload&&rag.payload.index?rag.payload.index:null;
+ const head='<div class="rag-head">'+ragBadge(rag.mode)
+  +(rag.note?'<small class="rag-note">'+escapeHtml(rag.note)+'</small>':'')
+  +(meta?'<small class="rag-meta">فهرس '+meta.chunks+' مقطعاً · '+(meta.content_status==='sample'?'بيانات عيّنة':'بيانات منشورة')+(meta.vector_gate?' · '+escapeHtml(meta.vector_gate):'')+'</small>':'')
+  +'</div>';
+ const hits=rag.results.length?'<div class="rag-hits">'+rag.results.map(ragRow).join('')+'</div>':'';
+ panel.innerHTML=head+hits;
+ panel.classList.remove('hidden');
+}
+async function runRag(){
+ const query=$('search').value.trim();
+ const mine=++rag.seq;
+ if(!query||!window.WahaRag||!window.WahaRag.search){rag.mode='NONE';rag.results=[];rag.note='';rag.payload=null;renderRag();return;}
+ const out=await window.WahaRag.search({query,apiBase:backend.base,k:5,fetchImpl:typeof fetch==='function'?fetch:undefined,
+  browserFilter:needle=>{const key=needle.toLocaleLowerCase();return state.skills.filter(skill=>[skill.name,skill.description,...(skill.tags||[])].join(' ').toLocaleLowerCase().includes(key));}});
+ if(mine!==rag.seq)return;  // a newer keystroke already answered; never show a stale list
+ rag.mode=out.mode;rag.payload=out.payload||null;rag.note=out.note||'';
+ rag.results=out.mode==='RAG_LOCAL'?(out.results||[]):[];
+ if(out.mode==='BROWSER_FALLBACK')rag.note=(out.note?out.note+' — ':'')+'النتائج بالأسفل تصفية محلية للكتالوج، لا استرجاع من فهرس.';
+ renderRag();
+}
+function scheduleRag(){clearTimeout(ragTimer);ragTimer=setTimeout(runRag,250);}
+
 function renderChats(){
  if(!state.sessions.length){const emptyText=state.me?.authenticated?'ابدأ جلسة مع أي مهارة، وستجدها هنا لاحقاً.':(backend.base&&backend.status==='unreachable'?'الخادم غير متاح حالياً؛ حدّث الصفحة وحاول مجدداً.':'المحادثات ليست جزءاً من نسخة Pages الثابتة.');$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${emptyText}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
  $('chats-list').innerHTML=state.sessions.map(s=>{
@@ -535,7 +580,9 @@ document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if
 $('theme-toggle').addEventListener('click',()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
 $('help-button').addEventListener('click',()=>$('help-dialog').showModal());
 $('explore-button').addEventListener('click',()=>$('catalog').scrollIntoView({behavior:'smooth'}));
-['search','category','difficulty'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',renderSkills));
+['search','category','difficulty'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',()=>{renderSkills();if(id==='search')scheduleRag();}));
+$('rag-panel')&&$('rag-panel').addEventListener('click',event=>{const open=event.target.closest('[data-rag-skill]');if(open)openSkill(open.dataset.ragSkill);});
+scheduleRag();
 $('skill-grid').addEventListener('click',e=>{const open=e.target.closest('[data-skill]'),download=e.target.closest('[data-download]');if(open)openSkill(open.dataset.skill);if(download)downloadSkill(download.dataset.download);});
 $('chats-list').addEventListener('click',e=>{const button=e.target.closest('[data-session]');if(button)openSession(button.dataset.session);if(e.target.closest('#chats-explore'))switchView('discover');});
 $('download-skill').addEventListener('click',()=>{if(state.selected)downloadSkill(state.selected.id);});

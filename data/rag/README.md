@@ -15,6 +15,17 @@ python scripts/rag_index.py --print-stats
 | `manifest.json` | أي الملفات دخلت البناء، بايتاتها و`sha256` لكل مخرَج، و`pipeline` بإصداراته. |
 | `stats.json` | العدادات والتوزيعات، و**`vector_gate`**: قرار التضمين المحسوب. |
 
+## المستهلكون
+
+| مرحلة | كيف تقرأ هذه الملفات |
+|---|---|
+| **R2** (`backend/rag_search.py` → `GET /api/search`) | **قراءة فقط**: `index.json` للدرجات و`corpus.jsonl` للنص؛ لا يعيد البناء ولا يغيّر schema. `chunk_id`/`citation` في الردّ هما سلسلتا R1 حرفيًا، و`index.manifest_sha256` في كل استجابة هو sha256 لـ`index.json` نفسه |
+| **R3** (`kb_search` في `agent/tools.py`) | تستدعي `rag_search.search()` نفسها — لا مسترجِع ثانيًا داخل الوكيل |
+| **R4** (`scripts/rag_eval.py`) | تبني الأسئلة من `corpus.jsonl` وتكتب `data/rag/eval-report.json`، الملف الوحيد المسموح له بتغيير بوابة R5 |
+
+لا شيء هنا يُضمَّن ولا يُبني وقت الطلب: الدليل كامل في المستودع، و`scripts/rag_index.py --check`
+يفشل CI إن باعته المخرجات شيئًا مختلفًا.
+
 ## العقد الذي يضمنه `scripts/rag_index.py`
 
 - **حتمي:** نفس المصدر + نفس خط الأنابيب = نفس البايتات. لا طابع زمني في أي مخرَج، لذلك يبقى `--check` صالحًا للأبد.

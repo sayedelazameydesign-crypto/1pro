@@ -98,6 +98,19 @@ class CheckTests(unittest.TestCase):
         _e, _w, notes = check(dict(GOOD, AGENT_NETWORK_TOOLS="1"), target="render")
         self.assertTrue(any("web_fetch" in item for item in notes))
 
+    def test_vercel_bundle_keeps_what_the_search_endpoint_reads(self):
+        # R2 loads backend/rag_text.py and data/rag/index.json at request time. The
+        # bundle ships backend/ and data/ and excludes scripts/**; excluding data/ would
+        # make /api/search 503 on Vercel while every repo test stayed green.
+        data = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
+        raw = data["functions"]["api/index.py"]["excludeFiles"].strip("{}")
+        excluded = {item.strip() for item in raw.split(",")}
+        self.assertNotIn("data/**", excluded)
+        self.assertNotIn("backend/**", excluded)
+        self.assertIn("scripts/**", excluded, "the builder stays out of the bundle")
+        self.assertTrue((ROOT / "backend" / "rag_text.py").exists())
+        self.assertTrue((ROOT / "data" / "rag" / "index.json").exists())
+
     def test_the_repo_ships_a_vercel_config_that_passes_its_own_rules(self):
         # Verbatim regression guard for the two shapes that break Vercel builds.
         data = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
