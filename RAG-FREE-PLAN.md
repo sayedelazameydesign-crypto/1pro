@@ -330,17 +330,20 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_agent_kb_search.py` | 23 |
 | `tests/test_agent_no_platform_branching.py` | 14 |
 | `tests/test_agent_runtime.py` | 25 |
+| `tests/test_components_contract.py` | 8 |
 | `tests/test_deploy_doctor.py` | 17 |
 | `tests/test_docs_match_code.py` | 11 |
 | `tests/test_nvidia.py` | 13 |
 | `tests/test_rag_eval.py` | 14 |
 | `tests/test_rag_index.py` | 38 |
 | `tests/test_rag_search.py` | 29 |
-| `tests/test_vercel_wrapper.py` | 3 |
+| `tests/test_vercel_wrapper.py` | 4 |
 | `tests/test_waha.py` | 23 |
-| **المجموع** | **249** |
+| **المجموع** | **258** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
+فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
+إلا إذا وصلها payload من `/health` أو `/api/agent/config`، وأنّ ما لم يُقرأ يُكتب «غير معروف».
 فحص `--self-test` لحساب المقاييس في R4: 7 فحوص (لا تُحتسب أعلاه؛ ليست `tests/test_*.py`).## 4) كلفة المجانية، بالأرقام الصريحة
 
 - **النقطة 1,000 تكفيك للبناء لا للتشغيل:** تضمين كتالوج اليوم = ~3 طلبات؛ تقييم = ~100؛ هامش تجريبي = مقبول. **لو استُخدمت للتشغيل العام:** ~14 طلبًا/دقيقة فعليًا (سقف 40 RPM لكل نموذج)، و1,000 نقطة = ~1,000 استدعاء ثم **402/429 بلا مسار رسمي لزيادة المجاني**. من هنا: التشغيل على Gemini المجاني/بوصلتك، وNVIDIA للنقر محليًا.

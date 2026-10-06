@@ -1,0 +1,79 @@
+# النشر على Vercel (خطة Hobby) + Neon — بلا بطاقة ائتمان
+
+دليل تشغيل مختصر. الشرح الكامل والقيود في `README.md` → «بديل النشر: Vercel (خطة Hobby)»،
+والقرار المعماري في `ARCHITECTURE.md` → «النشر على المجاني». هذا الملف لا يكرّرهما، بل يجمع
+الخطوات في مكان واحد.
+
+## ما تحصل عليه فعلاً (بلا بطاقة)
+
+| البند | القيمة |
+|---|---|
+| السعر | Hobby = 0$ دائمًا، **بلا بطاقة ائتمان**، والحساب لا يُفوتر أصلاً |
+| الشرط | **شخصي/غير تجاري فقط**؛ أي استخدام تجاري يحتاج Pro (20$/مقعد) |
+| عند التجاوز | تُوقف الميزة حتى نافذة الـ30 يومًا التالية — لا فاتورة مفاجئة |
+| الحدود | 100GB نقل · 1M استدعاء دالة · 1M طلب edge · 100 نشر/يوم |
+| مدة الدالة | `maxDuration: 60` في `vercel.json` (مضمون على Hobby بدون Fluid Compute) |
+| مهام الوكيل | **inline**: خطوة واحدة · 45 ثانية · 3 استدعاءات نموذج، والأدوات التي تحتاج موافقة تُرفض |
+
+> إن احتجت مهامًا أطول لاحقًا (خطوات متعددة، موافقات، مهام حتى 180 ثانية) فالمسار هو
+> **Render** — وهو أيضًا بلا بطاقة — لأن `render.yaml` يشغّل `queued` بعامل خلفي.
+
+## 1) Neon (قاعدة البيانات)
+
+1. أنشئ مشروعًا على [neon.com](https://neon.com) — لا بطاقة.
+2. انسخ رابط الاتصال **pooled** (يحتوي `-pooler`) وأبقِ `sslmode=require`.
+3. إن فشل الاتصال لاحقًا: احذف `channel_binding=require` من الرابط.
+
+## 2) Vercel (الخادم)
+
+1. New Project → Import Git Repository → اختر `1pro`.
+2. **Framework Preset: Other**، و**Root Directory: جذر المستودع** (لا تغيّره):
+   `vercel.json` في الجذر، والدالة في `api/index.py`، و`vercel.json` يعيد كتابة كل المسارات إليها.
+3. لا تعدّل Build Command أو Output Directory. الملف يضبط كل شيء.
+
+> **`requirements.txt` في الجذر مسطّح عن قصد.** Vercel يقرأه بمحلّل لا يفهم `-r`، وإن
+> وجد سطر include يفشل البناء بـ`could not parse requirements.txt: Error parsing
+> included file`. النسخة المسطّحة تُطابق `backend/requirements.txt` بايتًا ببايت في
+> الحزم المثبَّتة، ويحرس التطابق اختبار في CI.
+
+### متغيرات البيئة (Production فقط)
+
+| المتغير | القيمة | ملاحظة |
+|---|---|---|
+| `DATABASE_URL` | رابط Neon الـpooled | ليس اختياريًا: `/tmp` وحده قابل للكتابة على Vercel، فـSQLite يضيع مع كل إعادة تدوير |
+| `GEMINI_API_KEY` | من Google AI Studio | لا يوضع في المستودع ولا في المحادثة؛ عند أي انكشاف استبدله فورًا |
+| `WAHA_SECRET` | **اضبطه يدويًا هنا** | بخلاف Render (حيث يولّده `render.yaml`)، بدونه تُبطَل جلسات الزوار مع كل إعادة تشغيل |
+| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | origin فقط بدون `/1pro`؛ المتصفح يقارن الأصل لا المسار |
+
+**يُمنع** ضبط أيٍّ من: `WAHA_TRUST_PROMPTQL` (يقبل ترويسة هوية بلا تحقّق توقيع على خدمة عامة)
+و`PROMPTQL_PLATFORM_API_URL` (يحوّل مسار AI إلى البوابة ويُلغي مسار المفتاح المباشر).
+`VERCEL` يضبطها المنصّ نفسه تلقائيًا.
+
+## 3) التحقق قبل النشر وبعده
+
+```bash
+# قبل: صحة البيئة (بلا شبكة، وبلا طباعة أي مفتاح)
+python scripts/deploy_doctor.py --env-file service.env --target vercel
+
+# بعد أول نشر: سموك كامل يفحص R1→R6 على الخادم الحيّ
+scripts/smoke.sh https://<app>.vercel.app
+curl -sS --max-time 60 https://<app>.vercel.app/health
+curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جسم
+```
+
+على `inline` لا يرجّ سكربت السموك الطابور: المهمة تنتهي داخل الطلب، فيقرأ الحالة من سجل الأحداث.
+`ai_enabled=false` فشل متوقّع إن لم يُضبط المفتاح.
+
+## 4) ربط الواجهة
+
+1. ضع عنوان Vercel في `docs/data/config.json` → `api_base` (بدون مسار).
+2. commit + PR → CI (فهرس + اختبارات + `node --check`) → merge.
+3. Actions → «Publish static skill catalog to Pages» → Run workflow (نشر Pages **يدوي** عمدًا).
+4. افتح الصفحة: مساحة العمل → لوحة «مكوّنات النظام» يجب أن تعرض `inline` وبطاقات حيّة من
+   `/health` و`/api/agent/config`، وبطاقة «قاعدة البيانات: Postgres (Neon)».
+
+## ما لا يفعله هذا النشر
+
+- لا يشغّل مهامًا طويلة أو بانتظار موافقة (اقرأ القيود أعلاه قبل أن تَعِد أحدًا بها).
+- لا يستخدم NVIDIA: جلسات NVIDIA تتطلب بوابة PromptQL وتُرفض بـ`503 nvidia_requires_gateway`.
+- لا يجعل Hobby مناسبًا لاستخدام تجاري؛ الشروط تنص على الاستخدام الشخصي.

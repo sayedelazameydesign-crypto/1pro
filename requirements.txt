@@ -1,7 +1,15 @@
-# Vercel installs the requirements.txt at the repository root. The runtime pins
-# live in backend/requirements.txt so Render and Vercel cannot drift apart.
+# Vercel reads this file while it builds the Python function. Its parser resolves
+# package names only: an `-r backend/requirements.txt` include makes the build fail
+# with "could not parse requirements.txt: Error parsing included file", which is what
+# kept every deployment red. So the pins are listed here in full.
 #
-# Do NOT re-pin psycopg here without the [binary] extra: the serverless image
-# has no system libpq, and a bare `psycopg==...` resolves to the non-binary
-# wheel that needs libpq at import time.
--r backend/requirements.txt
+# The same pins live in backend/requirements.txt, which is what Render, CI and local
+# setup install. The two are kept identical by
+# tests/test_vercel_wrapper.py::RootManifestTests, so a version bump in one file that
+# forgets the other fails the suite instead of drifting into production.
+#
+# Do NOT write psycopg without the [binary] extra: the serverless image has no system
+# libpq, and a bare `psycopg==...` resolves to the wheel that needs it at import time.
+flask==3.1.3
+gunicorn==26.2.0
+psycopg[binary]~=3.2
