@@ -1,0 +1,675 @@
+{
+  "format": "waha.rag-eval.v1",
+  "eval_version": "waha.rag-eval/1",
+  "recall_at": 5,
+  "index_sha256": "sha256:d0c98bc7139790fba8dcf6745b3f2298906d40a0f585f3ee9bcf069454df025f",
+  "corpus": {
+    "format": "waha.rag.v1",
+    "pipeline": {
+      "chunker": "block-greedy-overlap/1",
+      "tokenizer": "waha.word-ar-lite/1",
+      "stemmer": "waha.affix-lite/1",
+      "max_chars": 1600,
+      "min_chars": 120,
+      "overlap_ratio": 0.15,
+      "overlap_max_chars": 240,
+      "hard_split_floor": 0.6,
+      "max_stem_forms": 32
+    },
+    "tokenizer": "waha.word-ar-lite/1",
+    "chunks": 18,
+    "indexed_chunks": 18,
+    "docs": 6,
+    "vocab": 196,
+    "content_status": "sample"
+  },
+  "search_version": "waha.rag-search/1",
+  "params": {
+    "k": 5,
+    "bm25_k1": 1.4,
+    "bm25_b": 0.75
+  },
+  "gate": {
+    "lexical_recall_at5": 0.8,
+    "policy": "recall_at5 below the ceiling is what justifies vectors"
+  },
+  "counts": {
+    "cases": 22,
+    "answerable": 16,
+    "no_answer": 5,
+    "zero_hit_cases": 6,
+    "inferred_only_cases": 2,
+    "advisory_cases": 1
+  },
+  "metrics": {
+    "recall_at5": 0.9375,
+    "precision_at_1": 0.9375,
+    "no_answer_rate": 1.0,
+    "false_answer_rate": 0.0,
+    "citation_correctness": 1.0,
+    "duplicate_hit_rate": 0.0,
+    "mean_results": 2.2273
+  },
+  "cases": [
+    {
+      "id": "q01",
+      "kind": "answerable",
+      "query": "كيف أحدد جمهور الرسالة قبل الكتابة؟",
+      "ground_truth": [
+        "SKL001#prompt",
+        "SKL001#starter"
+      ],
+      "returned": [
+        "SKL001#prompt",
+        "SKL005#description",
+        "SKL001#starter",
+        "SKL005#prompt"
+      ],
+      "scores": [
+        1.52476,
+        1.43565,
+        0.977688,
+        0.69342
+      ],
+      "coverage": 0.0,
+      "inferred_only": true,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL001#prompt",
+        "SKL001#starter"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q02",
+      "kind": "answerable",
+      "query": "أريد كتابة منشور قصير عن إطلاق منتج جديد",
+      "ground_truth": [
+        "SKL001#starter",
+        "SKL001#prompt"
+      ],
+      "returned": [
+        "SKL001#starter",
+        "SKL001#prompt",
+        "SKL005#prompt",
+        "SKL002#description",
+        "SKL002#prompt"
+      ],
+      "scores": [
+        8.402761,
+        2.581661,
+        1.540933,
+        1.146806,
+        0.871612
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL001#starter",
+        "SKL001#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q03",
+      "kind": "answerable",
+      "query": "ما الفرق بين القائمة والقاموس في Python بمثال بسيط؟",
+      "ground_truth": [
+        "SKL002#starter",
+        "SKL002#prompt"
+      ],
+      "returned": [
+        "SKL002#starter",
+        "SKL002#prompt",
+        "SKL003#description"
+      ],
+      "scores": [
+        7.845335,
+        1.936917,
+        1.337606
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL002#starter",
+        "SKL002#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q04",
+      "kind": "answerable",
+      "query": "علّمني أساسيات بايثون بأمثلة قصيرة وتمارين",
+      "ground_truth": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ],
+      "returned": [
+        "SKL002#description",
+        "SKL002#prompt"
+      ],
+      "scores": [
+        8.929126,
+        1.936917
+      ],
+      "coverage": 0.5,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q05",
+      "kind": "answerable",
+      "query": "بايثون",
+      "ground_truth": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ],
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ],
+      "recall_at5": 0,
+      "precision_at_1": 0,
+      "false_answer": 0
+    },
+    {
+      "id": "q06",
+      "kind": "answerable",
+      "query": "كيف أرتب أولوياتي وأبني خطة يومية واقعية؟",
+      "ground_truth": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ],
+      "returned": [
+        "SKL003#description",
+        "SKL003#prompt",
+        "SKL006#description",
+        "SKL003#starter"
+      ],
+      "scores": [
+        7.327373,
+        3.311844,
+        1.980499,
+        0.647275
+      ],
+      "coverage": 0.5,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q07",
+      "kind": "answerable",
+      "query": "لدي 4 ساعات وثلاث مهام: إعداد عرض، مراجعة رسائل، وتعلم مهارة جديدة",
+      "ground_truth": [
+        "SKL003#starter"
+      ],
+      "returned": [
+        "SKL003#starter",
+        "SKL003#description",
+        "SKL005#prompt",
+        "SKL003#prompt"
+      ],
+      "scores": [
+        15.052866,
+        1.980499,
+        1.847422,
+        1.506137
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL003#starter"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q08",
+      "kind": "answerable",
+      "query": "أصمم شاشة تسجيل لتطبيق عربي. ما أهم الأسئلة التي أبدأ بها؟",
+      "ground_truth": [
+        "SKL004#starter",
+        "SKL004#prompt"
+      ],
+      "returned": [
+        "SKL004#starter"
+      ],
+      "scores": [
+        14.227835
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL004#starter",
+        "SKL004#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q09",
+      "kind": "answerable",
+      "query": "راجع فكرة واجهة وحدد احتياجات المستخدم ومشاكل الاستخدام في RTL",
+      "ground_truth": [
+        "SKL004#description",
+        "SKL004#prompt"
+      ],
+      "returned": [
+        "SKL004#description",
+        "SKL004#prompt",
+        "SKL001#description",
+        "SKL003#prompt"
+      ],
+      "scores": [
+        23.597044,
+        2.88815,
+        2.296017,
+        1.805706
+      ],
+      "coverage": 0.8889,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL004#description",
+        "SKL004#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q10",
+      "kind": "answerable",
+      "query": "ساعدني في تحديد السياق والمستلم والطلب في بريد مهني",
+      "ground_truth": [
+        "SKL005#prompt",
+        "SKL005#description"
+      ],
+      "returned": [
+        "SKL005#prompt",
+        "SKL001#starter",
+        "SKL005#starter"
+      ],
+      "scores": [
+        13.876346,
+        1.184582,
+        1.184582
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL005#prompt",
+        "SKL005#description"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q11",
+      "kind": "answerable",
+      "query": "أريد إرسال بريد لطلب تأجيل موعد تسليم يومين بنبرة مهنية",
+      "ground_truth": [
+        "SKL005#starter",
+        "SKL005#prompt"
+      ],
+      "returned": [
+        "SKL005#starter",
+        "SKL005#description",
+        "SKL005#prompt"
+      ],
+      "scores": [
+        11.266807,
+        5.738792,
+        2.77801
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL005#starter",
+        "SKL005#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q12",
+      "kind": "answerable",
+      "query": "متى أستخدم المتوسط والوسيط؟",
+      "ground_truth": [
+        "SKL006#starter",
+        "SKL006#prompt"
+      ],
+      "returned": [
+        "SKL006#starter",
+        "SKL002#prompt",
+        "SKL006#prompt"
+      ],
+      "scores": [
+        6.430047,
+        1.936917,
+        0.994765
+      ],
+      "coverage": 1.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL006#starter",
+        "SKL006#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q13",
+      "kind": "answerable",
+      "query": "كيف أحوّل سؤالاً إلى خطة تحليل وأفهم الأرقام دون استنتاجات متسرعة؟",
+      "ground_truth": [
+        "SKL006#description",
+        "SKL006#prompt"
+      ],
+      "returned": [
+        "SKL006#description",
+        "SKL001#description",
+        "SKL003#description",
+        "SKL006#prompt",
+        "SKL003#prompt"
+      ],
+      "scores": [
+        24.564077,
+        2.296017,
+        1.980499,
+        1.765833,
+        1.506137
+      ],
+      "coverage": 0.9,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL006#description",
+        "SKL006#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q14",
+      "kind": "answerable",
+      "query": "لا تخترع نتائج من مصادر غير متاحة عند شرح المنهج والافتراضات",
+      "ground_truth": [
+        "SKL006#prompt"
+      ],
+      "returned": [
+        "SKL006#prompt",
+        "SKL001#prompt",
+        "SKL004#prompt"
+      ],
+      "scores": [
+        12.374022,
+        1.847422,
+        1.847422
+      ],
+      "coverage": 0.8571,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL006#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q15",
+      "kind": "answerable",
+      "query": "اعرض مسودة عنوان ونص وخاتمة للرسالة",
+      "ground_truth": [
+        "SKL005#prompt"
+      ],
+      "returned": [
+        "SKL005#prompt",
+        "SKL002#prompt"
+      ],
+      "scores": [
+        11.563643,
+        1.091144
+      ],
+      "coverage": 0.8333,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL005#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "q16",
+      "kind": "answerable",
+      "query": "إدارة الوقت",
+      "ground_truth": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ],
+      "returned": [
+        "SKL003#prompt"
+      ],
+      "scores": [
+        1.017228
+      ],
+      "coverage": 0.0,
+      "inferred_only": true,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": 0
+    },
+    {
+      "id": "n01",
+      "kind": "no_answer",
+      "query": "اشرح لي طبخ الكبة بالبرغل",
+      "ground_truth": null,
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": false
+    },
+    {
+      "id": "n02",
+      "kind": "no_answer",
+      "query": "ما سعر صرف الليرة اليوم",
+      "ground_truth": null,
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": false
+    },
+    {
+      "id": "n03",
+      "kind": "no_answer",
+      "query": "من فاز بكأس العالم 2022",
+      "ground_truth": null,
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": false
+    },
+    {
+      "id": "n06",
+      "kind": "no_answer",
+      "query": "أريد فكرة وصفة سريعة للعشاء",
+      "ground_truth": null,
+      "returned": [
+        "SKL004#description",
+        "SKL001#description"
+      ],
+      "scores": [
+        2.548459,
+        2.296017
+      ],
+      "coverage": 0.25,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": true,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 0,
+      "precision_at_1": 0,
+      "false_answer": true
+    },
+    {
+      "id": "n04",
+      "kind": "no_answer",
+      "query": "كم تكلفة اشتراك نتفلكس هذا الشهر",
+      "ground_truth": null,
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "deferred",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": false
+    },
+    {
+      "id": "n05",
+      "kind": "no_answer",
+      "query": "اشرح لي",
+      "ground_truth": null,
+      "returned": [],
+      "scores": [],
+      "coverage": 0.0,
+      "inferred_only": false,
+      "no_answer_decision": "unsearchable",
+      "duplicates": 0,
+      "advisory": false,
+      "citation_correct": true,
+      "expected": [],
+      "recall_at5": 1,
+      "precision_at_1": 1,
+      "false_answer": false
+    }
+  ]
+}

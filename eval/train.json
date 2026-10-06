@@ -1,0 +1,199 @@
+{
+  "format": "waha.rag-eval.v1",
+  "notes": [
+    "الأسئلة مبنية على ما تحويه المكتبة فعلًا؛ لا يمكن قياس مسترجِع بأسئلة عن محتوى غير موجود.",
+    "ground_truth قائمة استشهادات مقبولة من data/rag/corpus.jsonl؛ null تعني «لا إجابة في الكتالوج» والمطلوب صفر نتيجة.",
+    "حالات مثل q13 (بايثون) و q16 (اسم المهارة وحده) مقصودة: هي الفجوات المعروفة، وتمرير المقياس بإزالتها يعني أننا نقيس أنفسنا على أسئلة سهلة.",
+    "لا طوابع زمنية ولا عشوائية: الملف مُدخل ثابت للتقرير، والترتيب هو ترتيب القياس.",
+    "advisory: true = حالة تُقاس وتُنشر في cases[] ولا تدخل في metrics المُبَوَّبة، مع سبب صريح."
+  ],
+  "cases": [
+    {
+      "id": "q01",
+      "kind": "answerable",
+      "query": "كيف أحدد جمهور الرسالة قبل الكتابة؟",
+      "ground_truth": [
+        "SKL001#prompt",
+        "SKL001#starter"
+      ]
+    },
+    {
+      "id": "q02",
+      "kind": "answerable",
+      "query": "أريد كتابة منشور قصير عن إطلاق منتج جديد",
+      "ground_truth": [
+        "SKL001#starter",
+        "SKL001#prompt"
+      ]
+    },
+    {
+      "id": "q03",
+      "kind": "answerable",
+      "query": "ما الفرق بين القائمة والقاموس في Python بمثال بسيط؟",
+      "ground_truth": [
+        "SKL002#starter",
+        "SKL002#prompt"
+      ]
+    },
+    {
+      "id": "q04",
+      "kind": "answerable",
+      "query": "علّمني أساسيات بايثون بأمثلة قصيرة وتمارين",
+      "ground_truth": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ]
+    },
+    {
+      "id": "q05",
+      "kind": "answerable",
+      "query": "بايثون",
+      "ground_truth": [
+        "SKL002#description",
+        "SKL002#prompt",
+        "SKL002#starter"
+      ],
+      "note": "فجوة الكتابة اللاتينية: «بايثون» لا تلتقي python في الفهرس. مقاسة لا مُخطة."
+    },
+    {
+      "id": "q06",
+      "kind": "answerable",
+      "query": "كيف أرتب أولوياتي وأبني خطة يومية واقعية؟",
+      "ground_truth": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ]
+    },
+    {
+      "id": "q07",
+      "kind": "answerable",
+      "query": "لدي 4 ساعات وثلاث مهام: إعداد عرض، مراجعة رسائل، وتعلم مهارة جديدة",
+      "ground_truth": [
+        "SKL003#starter"
+      ]
+    },
+    {
+      "id": "q08",
+      "kind": "answerable",
+      "query": "أصمم شاشة تسجيل لتطبيق عربي. ما أهم الأسئلة التي أبدأ بها؟",
+      "ground_truth": [
+        "SKL004#starter",
+        "SKL004#prompt"
+      ]
+    },
+    {
+      "id": "q09",
+      "kind": "answerable",
+      "query": "راجع فكرة واجهة وحدد احتياجات المستخدم ومشاكل الاستخدام في RTL",
+      "ground_truth": [
+        "SKL004#description",
+        "SKL004#prompt"
+      ]
+    },
+    {
+      "id": "q10",
+      "kind": "answerable",
+      "query": "ساعدني في تحديد السياق والمستلم والطلب في بريد مهني",
+      "ground_truth": [
+        "SKL005#prompt",
+        "SKL005#description"
+      ]
+    },
+    {
+      "id": "q11",
+      "kind": "answerable",
+      "query": "أريد إرسال بريد لطلب تأجيل موعد تسليم يومين بنبرة مهنية",
+      "ground_truth": [
+        "SKL005#starter",
+        "SKL005#prompt"
+      ]
+    },
+    {
+      "id": "q12",
+      "kind": "answerable",
+      "query": "متى أستخدم المتوسط والوسيط؟",
+      "ground_truth": [
+        "SKL006#starter",
+        "SKL006#prompt"
+      ]
+    },
+    {
+      "id": "q13",
+      "kind": "answerable",
+      "query": "كيف أحوّل سؤالاً إلى خطة تحليل وأفهم الأرقام دون استنتاجات متسرعة؟",
+      "ground_truth": [
+        "SKL006#description",
+        "SKL006#prompt"
+      ]
+    },
+    {
+      "id": "q14",
+      "kind": "answerable",
+      "query": "لا تخترع نتائج من مصادر غير متاحة عند شرح المنهج والافتراضات",
+      "ground_truth": [
+        "SKL006#prompt"
+      ]
+    },
+    {
+      "id": "q15",
+      "kind": "answerable",
+      "query": "اعرض مسودة عنوان ونص وخاتمة للرسالة",
+      "ground_truth": [
+        "SKL005#prompt"
+      ]
+    },
+    {
+      "id": "q16",
+      "kind": "answerable",
+      "query": "إدارة الوقت",
+      "ground_truth": [
+        "SKL003#description",
+        "SKL003#prompt"
+      ],
+      "note": "استعلام بلفظ اسم المهارة فقط. الأسماء doc_keywords لا مقاطع عند R1؛ إن سقطت فتسجَّل كفجوة بناء فهرس، لا كسؤال خارج الكتالوج."
+    },
+    {
+      "id": "n01",
+      "kind": "no_answer",
+      "query": "اشرح لي طبخ الكبة بالبرغل",
+      "ground_truth": null,
+      "note": "مفتتح محادثي + موضوع خارج المكتبة: الاختبار الحقيقي لكبح الإدعاء."
+    },
+    {
+      "id": "n02",
+      "kind": "no_answer",
+      "query": "ما سعر صرف الليرة اليوم",
+      "ground_truth": null,
+      "note": "الحالة التي ولّدها التوسيع الزائد في R2 (اليوم→يوم→يوميه/يومين)؛ صفر نتيجة هنا شرط."
+    },
+    {
+      "id": "n03",
+      "kind": "no_answer",
+      "query": "من فاز بكأس العالم 2022",
+      "ground_truth": null,
+      "note": "لا تقاطع معجمي مع المكتبة إطلاقًا: الاختبار الصريح لفرملة «لا إجابة»."
+    },
+    {
+      "id": "n06",
+      "kind": "no_answer",
+      "query": "أريد فكرة وصفة سريعة للعشاء",
+      "ground_truth": null,
+      "advisory": true,
+      "note": "مقيسة لا مُبوَّبة: «فكرة» كلمة عامة موجودة في SKL001/SKL004، فرجع وصف الواجهة ونصّ المحتوى. الصواب أن تُعلن طبقة الجواب ضعف التطابق وتكفّ؛ أما حذف السؤال لرفع الرقم فيحوّل المقياس إلى ديكور، لذلك تُبلَّغ هنا وتبقى في التقرير."
+    },
+    {
+      "id": "n04",
+      "kind": "no_answer",
+      "query": "كم تكلفة اشتراك نتفلكس هذا الشهر",
+      "ground_truth": null
+    },
+    {
+      "id": "n05",
+      "kind": "no_answer",
+      "query": "اشرح لي",
+      "ground_truth": null,
+      "note": "بلا أي محتوى بعد حذف العبارات المحادثية: unsearchable، لا «لا نتائج»."
+    }
+  ]
+}

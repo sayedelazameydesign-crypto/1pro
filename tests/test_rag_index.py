@@ -8,6 +8,7 @@ import io
 import json
 import contextlib
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -90,7 +91,15 @@ class CommittedArtifacts(unittest.TestCase):
 
     def test_cli_writes_then_checks_without_touching_the_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
-            out = str(Path(tmp) / "rag")
+            out_dir = Path(tmp) / "rag"
+            out_dir.mkdir()
+            # stats.json embeds the vector gate, and the gate reads R4's committed report.
+            # Seed it so "identical to the committed artifacts" compares like with like:
+            # the builder is a pure function of its inputs, and one of those inputs now
+            # lives in the same directory.
+            if (OUT / "eval-report.json").exists():
+                shutil.copy(OUT / "eval-report.json", out_dir / "eval-report.json")
+            out = str(out_dir)
             code, output = quiet(rag_index.main, ["--out", out, "--print-stats", "--verify"])
             self.assertEqual(code, 0, output)
             self.assertIn("contract verified", output)
@@ -362,12 +371,19 @@ class SyntheticGuards(unittest.TestCase):
 class VectorGate(unittest.TestCase):
     """The R5 decision must be computed from measurements, never from a meeting."""
 
-    def test_sample_catalog_stays_lexical(self):
-        gate = json.loads((OUT / "stats.json").read_text(encoding="utf-8"))["vector_gate"]
+    def test_sample_catalog_stays_lexical_on_a_measured_recall(self):
+        # R4 landed, so this gate is no longer "closed because nothing was measured": it
+        # is closed because recall@5 cleared the ceiling. The distinction is the whole
+        # point of R4, so the test asserts the number and its source, not the absence.
+        stats = json.loads((OUT / "stats.json").read_text(encoding="utf-8"))
+        report = json.loads((OUT / "eval-report.json").read_text(encoding="utf-8"))
+        gate = stats["vector_gate"]
         self.assertFalse(gate["vector_enabled"])
         self.assertEqual(gate["decision"], "lexical-only")
         self.assertEqual(gate["reasons"], [])
-        self.assertIsNone(gate["measured"]["lexical_recall_at5"])
+        measured = gate["measured"]["lexical_recall_at5"]
+        self.assertEqual(measured, report["metrics"]["recall_at5"])
+        self.assertGreaterEqual(measured, gate["thresholds"]["lexical_recall_at5"])
 
     def test_gate_flips_when_the_corpus_grows(self):
         gate = build([skill(description="كلمة " * 60000)])[3]["vector_gate"]

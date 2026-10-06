@@ -12,6 +12,7 @@ python scripts/rag_index.py --print-stats
 |---|---|
 | `corpus.jsonl` | مقطع واحد في كل سطر؛ النص كامل مع `span`/`covered` و`citation`. هذا هو المرجع الذي تثق به R2/R3/R4. |
 | `index.json` | فهرس معجمي جاهز لـ BM25: `postings` (مصطلح → `df` و`[ci, tf]`)، `chunk_len`، و`stem_forms` كتوسيع عكسي لا كبديل للاسطح. مضغوط لأنه مدخل آلة لا ملف يُقرأ بالعين. |
+| `eval-report.json` | قياس R4: 22 حالة ومقاييسها، مع `index_sha256` يفضح أي تقادم. لا طابع زمني ولا عشوائية؛ يُعاد توليده بـ`python scripts/rag_eval.py` |
 | `manifest.json` | أي الملفات دخلت البناء، بايتاتها و`sha256` لكل مخرَج، و`pipeline` بإصداراته. |
 | `stats.json` | العدادات والتوزيعات، و**`vector_gate`**: قرار التضمين المحسوب. |
 
@@ -21,7 +22,7 @@ python scripts/rag_index.py --print-stats
 |---|---|
 | **R2** (`backend/rag_search.py` → `GET /api/search`) | **قراءة فقط**: `index.json` للدرجات و`corpus.jsonl` للنص؛ لا يعيد البناء ولا يغيّر schema. `chunk_id`/`citation` في الردّ هما سلسلتا R1 حرفيًا، و`index.manifest_sha256` في كل استجابة هو sha256 لـ`index.json` نفسه |
 | **R3** (`kb_search` في `agent/tools.py`) | تستدعي `rag_search.search()` نفسها — لا مسترجِع ثانيًا داخل الوكيل |
-| **R4** (`scripts/rag_eval.py`) | تبني الأسئلة من `corpus.jsonl` وتكتب `data/rag/eval-report.json`، الملف الوحيد المسموح له بتغيير بوابة R5 |
+| **R4** (`scripts/rag_eval.py` → `eval/train.json`) | تقيس عبر `rag_search.search()` نفسها وتكتب `eval-report.json`؛ وهو **الكاتب الوحيد** له. `--check` يعيد الحساب ويقارن البايتات ويَفشل CI على الانحراف أو على `false-answer > 0`. بوابة `vector_gate` في `stats.json` تقرأ `metrics.recall_at5` من هذا الملف وحده |
 
 لا شيء هنا يُضمَّن ولا يُبني وقت الطلب: الدليل كامل في المستودع، و`scripts/rag_index.py --check`
 يفشل CI إن باعته المخرجات شيئًا مختلفًا.

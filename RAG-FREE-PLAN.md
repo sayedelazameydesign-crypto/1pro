@@ -1,6 +1,6 @@
 # خطة الاستفادة المجانية من NVIDIA rag-blueprint (ونظامك الحالي)
 
-**الحالة:** ورقة قرار · 2026-10-06 · **R1 وR2 وR3 مُنفَّذة** (R1: 38 · R2: 29 + 15 فحص عقد متصفح · R3: 23 + مساران في حلقة الوكيل) · R4 التالية · R5 خلف بوابة محسوبة · كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر.
+**الحالة:** ورقة قرار · 2026-10-06 · **R1→R4 مُنفَّذة** (R1: 38 · R2: 29 + 15 فحص عقد متصفح · R3: 23 + مساران في الحلقة · R4: 14 + 7 self-test) · **R5 خلف بوابة محسوبة وقد بقيت مغلقة** (`recall@5 = 0.9375 ≥ 0.80`) · كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر. كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر.
 
 > **ملاحظة ترتيب:** التعديل المعتمد — **R4 يأتي فور R2/R3 لا بعدهما بمدة** — مُثبَّت في الجدول أدناه. والسبب عملي: دون `recall@5` مقيس، لا فرق بين «الاسترجاع يعمل» و«يبدو أنه يعمل». كما أن `R6` لم يعد «ثلاثة متغيرات وننتهي»: صار وضع نشر بعقد اختبار يمنع التفرّع حسب المُولَّد.
 
@@ -103,7 +103,7 @@ scripts/rag_eval.py     ← recall@5 · precision@1 · no-answer-rate · citatio
 | **R1** ✅ | **تم**: `scripts/rag_index.py` يبني `data/rag/{corpus.jsonl,index.json,manifest.json,stats.json}` — تقطيع على حدود الفقرات/الجُمل + SHA-256 dedup + فهرس معجمي جاهز لـ BM25، **بلا أي استدعاء شبكة** | `scripts/rag_index.py`, `tests/test_rag_index.py`, `data/rag/*` | 18 قسمًا → 18 مقطعًا · `vocab=196` · `postings=240` · بناءان متتاليان = نفس البايتات · CI يفشل لو اختلفت المخرجات المُودَعة | منجز |
 | **R2** ✅ | **تم**: `backend/rag_search.py` يستهلك `data/rag/index.json` **كما هو** (لا مخطط موازٍ، لا إعادة توليد) بـBM25 فوق `postings` القائمة + وزن للقسم داخل التراكم + طيّ للاستعلام وبنية `stem_forms` نفسها؛ `GET /api/search?q=` هو المستهلك الوحيد للفهرس؛ المتصفح يسمّي مصدره: `RAG_LOCAL` أو `BROWSER_FALLBACK` أو `بلا مصدر` | `backend/rag_search.py`, `backend/rag_text.py`, `backend/app.py`, `docs/assets/search.js`, `tests/test_rag_search.py`, `tests/browser_search.test.mjs` | `بريد` → `SKL005#prompt` عند **2.778** ثم `starter` عند 1.185 (التلوّث انكسر) · سؤال محادثي → `prompt` يسبق `starter` · خارج الكتالوج → **0 نتيجة** و`max_score=0.0` · الاستشهاد يُقرأ راجعًا إلى `corpus.jsonl` حرفيًا · 5 استدعاءات متطابقة = نفس البايتات · بلا فهرس → **503** لا نجاح وهمي | الآن |
 | **R3** ✅ | **تم**: `kb_search` داخل `backend/agent/tools.py` — نافذة رفيعة على R2 لا مسترجِعًا ثانيًا: تستدعي `rag_search.search()` وتمرّر `citation`/`chunk_id` حرفيًا، بسقف 5 نتائج و3000 حرف أدلة للفة النموذج التالية، وبلا موافقة (اقرأ-فقط) وبلا شبكة وبلا DB | `backend/agent/tools.py`, `backend/agent/runtime.py` (حقن `rag_index_dir`), `tests/test_agent_kb_search.py`, `tests/test_agent_runtime.py` | 23 فحصًا محليًا + مساران داخل حلقة الوكيل الحقيقية؛ دليل نصّي (AST بلا docstrings) bahwa لا `postings`/`idf`/`content_terms`/`corpus.jsonl` داخل `tools.py`؛ فهرس مفقود → `ToolError` لا `results: []` | الآن |
-| **R4** | تقييم: `eval/train.json` + `scripts/rag_eval.py` في CI (fake provider)، بمقاييس `recall@5` · `precision@1` · `no-answer-rate` · `citation-correctness` · `duplicate-hit-rate`، وسؤال **خارج الكتالوج** إجباري (`ground_truth: null`)، ومنه حالة «عبارة محادثة عامة تطابق خطأً» (`اشرح لي…`) لقياس كبح الاختراع، لا فقط جودة المطابقة | ملفان + خطوة CI | `recall@5 ≥ 0.8` و`no-answer` صحيح على الأسئلة الخارجة؛ الفشل يُفشل CI؛ ومخرجه `data/rag/eval-report.json` يُغذّي بوابة R5 تلقائيًا. **ثلاث قضايا موثّقة من R2 يجب أن تُقاس لا تُخمَّن:** (أ) `بايثون` ≠ `python` — لا جدول تعريب حتى يثبت مكسبه؛ (ب) أسماء المهارات وتصنيفاتها `doc_keywords` لا مقاطع، فسؤال لفظي مثل `العناوين` يرجع صفرًا — قياس ما إن كان رفعها إلى مقاطع يستحق؛ (ج) نزع `ال` التعريف مُطبَّق في R2 بوزن 0.45 ومعروَض كـ`inferred_terms` — على R4 أن يثبت أنه يرفع `recall@5` دون إسقاط `precision@1` | **فور R2/R3** |
+| **R4** ✅ | **تم**: `eval/train.json` (22 حالة: 16 قابلة للإجابة، 5 «لا إجابة»، 1 advisory) + `scripts/rag_eval.py` يقرأ عبر `rag_search.search()` نفسها ويكتب `data/rag/eval-report.json` — و`--check` في CI يقارن البايتات ويفشل على الانحراف | `eval/train.json`, `scripts/rag_eval.py`, `data/rag/eval-report.json`, `tests/test_rag_eval.py` | `recall@5 = 0.9375` · `precision@1 = 0.9375` · `no-answer = 1.0` · `false-answer = 0.0` · `citation = 1.0` · `dupes = 0.0` — والفجوتان Known مسجّلتان بالـid لا بحذف السؤال | منجَز |
 | **R5** | متجهات + إعادة ترتيب: `embedding halfvec(1024)` من `nv-embedqa-e5-v5` يبنيها السكربت **محليًا**، فهرس IVFFlat، `AGENT_RAG_RERANK=0/1` (rerieur على `/v1/rerank` بنقاطك محليًا) | migration + سكربت + مفتاحان محليان | حفظ 1,000 نقطة محذوفة: `--dry-run` يطبع عدد الطلبات قبل التنفيذ؛ لا `NVIDIA_API_KEY` في Render/Vercel | **فقط** عند >~200KB أو >50 مهارة أو أول PDF |
 | **R6** | وضع Serverless **بلا تفرّع في النواة**: السقف يُرفع بالعدد فقط (`AGENT_SERVERLESS_AI_CALLS=6 AGENT_SERVERLESS_MAX_STEPS=4 AGENT_SERVERLESS_PROVIDER_TIMEOUT_SECONDS=22`)، و**عقد اختبار** يثبت أن نفس المسار يخدم Render وVercel بلا `if provider ==` في النواة | env + اختبار عقد | `deploy_doctor.py --target vercel` لا يشتكي · p95 < 25s · اختبار واحد يفشل لو ظهر فرع خاص بوضع النشر | أخيرًا |
 
@@ -154,11 +154,12 @@ recall@5 = 0.89   precision@1 = 0.89   أسئلة خارج الكتالوج: 2 �
 **بوابة R5 تعمل الآن** — `stats.json.vector_gate` يعيد `lexical-only` مع القياسات الحية:
 
 ```
-corpus_bytes=2882 (الحد 200000) · skill_count=6 (الحد 50) · pdf_count=0 · lexical_recall_at5=null
-→ vector_enabled: false
+corpus_bytes=2882 (الحد 200000) · skill_count=6 (الحد 50) · pdf_count=0 ·
+lexical_recall_at5=0.9375 (الحد 0.80، مقيس الآن في §3.4)
+→ vector_enabled: false · reasons: []
 ```
 
-بمجرد كتابة R4 لتقريرها في `data/rag/eval-report.json`، يُعاد حساب البوابة تلقائيًا عند أول بناء فهرس — قرار التضمين صار ناتج قياس لا محادثة.
+**وصار.** كتبت R4 تقريرها في `data/rag/eval-report.json`، وأعاد البناءُ حساب البوابة عليه: `stats.json.vector_gate.measured.lexical_recall_at5 = 0.9375` و`vector_enabled: false`. الاختبار `tests/test_rag_eval.py::test_stats_json_gate_reads_this_report` يمنع انفصال الرقمين من الآن فصاعدًا.
 
 ## 3.2) ما ثبت من R2 (وما صحّحه القياس لا الذوق)
 
@@ -200,6 +201,27 @@ corpus_bytes=2882 (الحد 200000) · skill_count=6 (الحد 50) · pdf_count=
 **عيب حقيقي كشفته قائمة الأدوات.** `skill_lookup` كان ينادي `str.toLocaleLowerCase()` — طريقة JavaScript لا Python — منذ `baddf10`؛ لم يلمسه أي اختبار، فكان أي نداء بمعلومة `query` يسقط في `except Exception` ويبلغ النموذج «تعذّر تنفيذ الأداة» بلا سبب. صُحّح إلى `.lower()` (commit منفصل) وبُني اختبار يمنع رجوعه. لا علاقة له بـR2 لكنه يوضح لماذا تُدرَج الأدوات في القائمة لا في الـprompt وحده.
 
 **قياس على الخادم الحيّ:** `GET /api/agent/config` يرجّع `kb_search` ضمن الأدوات بـ`read_only: true` و`requires_approval: false` و`network: false`، وتبقى الأداة مُعلَنة حتى مع `AGENT_NETWORK_TOOLS=0` (تعطيل `web_fetch` لا يمسّ المعرفة). أمّا التنفيذ الكامل للخطوة فمُختبَر على مسار Flask الحقيقي وقاعدة SQL حقيقية مع `FakeProvider` (وضع `AGENT_FAKE=1` نفسه) — النموذج وحده مُبدَّل، لا الحلقة ولا الأداة ولا الفهرس.
+
+## 3.4) ما ثبت من R4 (الرقم الذي كان ناقصًا)
+
+**قبل R4 كانت كل أحاسين الجودة انطباعًا.** الآن `data/rag/eval-report.json` ناتج بناءٍ مُتحقَّق منه في CI، ومصدرٌ لبوابة R5، ولا تكتبه يد: `rag_eval.py --check` يعيد الحساب ويقارن **البايتات**، فلو غيّر أحدٌ المسترجِع أو الأسئلة بلا إعادة توليد التقرير يفشل CI.
+
+| المقياس | القيمة | ما تعنيه |
+|---|---|---|
+| `recall@5` | **0.9375** (15/16) | من الأسئلة القابلة للإجابة، كم واحدًا وجد استشهادًا صحيحًا في أول 5 |
+| `precision@1` | **0.9375** | الصدارة صحيحة أيضًا — لا مجرد وجود الإجابة في القائمة |
+| `no-answer-rate` | **1.0** | كل الأسئلة الخارجة عن الكتالوج رجعت **صفر نتيجة** |
+| `false-answer-rate` | **0.0** | لم يدّعِ المسترجِع إجابة حيث لا مادة |
+| `citation-correctness` | **1.0** | كل صفّ مُرجَع يُحلّ إلى زوج `(citation, chunk_id)` موجود فعلًا في `corpus.jsonl` |
+| `duplicate-hit-rate` | **0.0** | لا تكرار داخل النتيجة (إزالة التكرار في R1 تشتغل) |
+
+**الحالتان اللتان ترفضانه — وأُبقيتا.** `q05 = بايثون` تسقط (الفهرس يعرف `python` لا `بايثون`)، و`q16 = إدارة الوقت` تنجح هذه المرة لأن `إدارة` و`وقت` موجودان في النصّ لا في الاسم فقط. حذف `q05` يرفع الرقم إلى 1.0 ويُلغي سبب وجوده؛ تُترك، و`tests/test_rag_eval.py::test_the_set_keeps_the_hard_cases_it_would_like_to_drop` يمنع إزالتها، و`test_hard_misses_are_visible_in_the_report` يثبّت أن **الفقدان الوحيد هو `q05`** — أي تحسّن أو تدهور لاحق يُرى فورًا بالـid.
+
+**حالة «advisory» والفرق بينها وبين التجميل.** `n06 = أريد فكرة وصفة سريعة للعشاء` خارج الموضوع، لكن كلمة «فكرة» عامة وموجودة في `SKL001/SKL004`، فرجعت نتيجتان. هذا ليس خطأ ترتيب ولا يجب أن يُخفى: **الفرملة الصحيحة هنا ملك طبقة الجواب** (تعلن ضعف التطابق وتكفّ)، لا المسترجِع المعجمي. أضيف علم `advisory` يُخرجها من `metrics` المُبوَّبة مع إبقائها كاملة في `cases[]` وسطرًا مخصّصًا في ملخّص CI، واختبار يتعمّد أن تبقى فاشلة (`if the advisory case ever passes, delete the flag`). لا كسر للمقياس ولا طمس للاكتشاف.
+
+**ضمانات المنهج:** الأسئلة تُقرأ دائمًا عبر `rag_search.search()` نفسها (لا مسترجِع ثانيًا للتقييم)، و`ground_truth` تُتحقّق مقابل `corpus.jsonl` فتنفجر على أي استشهاد لم يعد موجودًا بدل أن تُحتسب خطأً على المسترجِع؛ التقرير يحمل `index_sha256` فيصير التقادم **قابلًا للكشف** لا للتخمين؛ ولا طابع زمني في أي ملف مُحدَّد (`test_no_wall_clock_in_a_deterministic_artifact`)؛ و`--check` لا يكتب شيئًا (`test_check_writes_nothing`).
+
+**نتيجة R5 الحاسمة بالقياس:** `recall@5 = 0.9375 ≥ 0.80` و`corpus_bytes = 2882` و`skill_count = 6` و`pdf_count = 0` → `vector_enabled: false`. **لا مبرر للمتجهات الآن.** الحجة الوحيدة القائمة ضد المسترجِع هي فجوة التعريب، والتضمين لا يعالجها (مصفوفة كلمات مترادفة أو جدول تعريب يعالجها) — وهذا بالضبط ما كان يهدر وقتنا لولا القياس.
 
 > **ملاحظة نشر:** الجلسات هنا مقيدة بفرع واحد (`arena/81cb4972-1pro`) وقائمة طلب دمجه، فلا يمكن فتح PR مستقل لكل مرحلة. البديل المطبَّق: **commit مستقل لكل مرحلة** داخل PR #8، راجع منفرجًا وقابل للنقض دون لمس ما قبله.
 

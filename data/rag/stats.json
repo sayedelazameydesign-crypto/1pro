@@ -97,7 +97,7 @@
       "corpus_bytes": 2882,
       "skill_count": 6,
       "pdf_count": 0,
-      "lexical_recall_at5": null
+      "lexical_recall_at5": 0.9375
     },
     "thresholds": {
       "corpus_bytes": 200000,
