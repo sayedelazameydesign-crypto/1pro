@@ -17,7 +17,11 @@
 ```bash
 python scripts/build_catalog.py
 python scripts/build_catalog.py --check
+python scripts/rag_index.py          # يعيد بناء corpus الاسترجاع ومفهرسه المعجمي
+python scripts/rag_index.py --check  # CI يرفض أي فهرس قديم مثلما يرفض الكتالوج القديم
 ```
+
+`data/rag/` ناتج مولَّد من هذه الملفات: لا تحرّفه يدويًا. انظر `data/rag/README.md`.
 
 أضف الملفات المصدرية والمولدة في نفس الـPR. لا يوجد Action يكتب تلقائياً إلى
 الفرع؛ CI يرفض الفهرس القديم، بدلاً من تنفيذ تغييرات بلا مراجعة.

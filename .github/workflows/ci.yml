@@ -16,6 +16,10 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r backend/requirements.txt
       - run: python scripts/build_catalog.py --check
+      # R1: the RAG corpus is generated, so CI proves the committed bytes are what
+      # this code builds (determinism) and that the contract holds (self-test).
+      - run: python scripts/rag_index.py --check
+      - run: python scripts/rag_index.py --self-test
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check backend/static/app.js
       # The deploy doctor validates the operator's environment offline; CI only
@@ -48,6 +52,10 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r backend/requirements.txt
       - run: python scripts/build_catalog.py --check
+      # R1: the RAG corpus is generated, so CI proves the committed bytes are what
+      # this code builds (determinism) and that the contract holds (self-test).
+      - run: python scripts/rag_index.py --check
+      - run: python scripts/rag_index.py --self-test
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check backend/static/app.js
       # The deploy doctor validates the operator's environment offline; CI only
