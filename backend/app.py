@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import time
 import uuid
 import socket
@@ -17,6 +18,18 @@ from urllib.parse import urlsplit
 from flask import Flask, g, jsonify, request, send_file
 
 ROOT = Path(__file__).resolve().parent
+# The agent package lives next to this module. Under `gunicorn app:app`,
+# `python app.py`, the Vercel wrapper and the test-suite the working directory
+# differs, so make the import independent of it.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agent.config import AgentConfig            # noqa: E402
+from agent.providers import GeminiProvider, GatewayProvider  # noqa: E402
+from agent.service import Service               # noqa: E402
+from agent.store import Store                   # noqa: E402
+from agent.runtime import Agent, Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
+from agent.tools import build_registry          # noqa: E402
 
 # --- Deployment configuration -------------------------------------------------
 # Standalone mode (e.g. Render): set DATABASE_URL, GEMINI_API_KEY, WAHA_SECRET,
@@ -311,7 +324,147 @@ def initialize():
         _migrate_sqlite_provider_cooldown(db)
 
 
+# --- Agent runtime wiring -----------------------------------------------------
+# The core (`backend/agent/`) is engine- and vendor-agnostic; this adapter is
+# the only glue, so the agent reuses the exact SQLite/Postgres quirks the chat
+# path already proved out (placeholder translation, RETURNING ids, pooling).
+class AgentDB:
+    @property
+    def postgres(self):
+        return POSTGRES
+
+    @staticmethod
+    def connect():
+        return connect()
+
+    @staticmethod
+    def run(db, sql, params=()):
+        return run(db, sql, params)
+
+    @staticmethod
+    def insert_returning_id(db, sql, params=()):
+        return insert_returning_id(db, sql, params)
+
+
+agent_store = Store(AgentDB())
+agent_tools = build_registry()
+
+
+# Local/demo mode only: `AGENT_FAKE=1` with no real credentials lets the UI (and
+# `scripts/smoke.sh`) walk the whole agent flow without a Gemini key or any
+# outbound call. Answers are canned and labelled as a demo, and the flag never
+# enables the chat path or the NVIDIA path.
+AGENT_FAKE = os.environ.get("AGENT_FAKE", "") == "1" and not GEMINI_API_KEY and not PROMPTQL_API_URL
+
+FAKE_SCRIPT = [
+    {"steps": [{"title": "احسب متوسط الأرقام", "goal": "اجمع الأرقام ثم اقسمها على عددها"},
+               {"title": "اكتب الخلاصة", "goal": "لخّص النتيجة في سطرين"}]},
+    {"thought": "أحتاج عملية حسابية", "action": {"tool": "calculator",
+                                                "args": {"expression": "(12+18+24)/3"}}, "final": None},
+    {"thought": "وصلت للنتيجة", "action": None, "final": "المتوسط يساوي 18"},
+    {"thought": "أعرض الملف في اللوحة", "action": {"tool": "artifact_write", "args": {
+        "name": "summary.md", "kind": "markdown",
+        "content": "# خلاصة\n\nالمتوسط = 18 (من 12 و18 و24).\n"}}, "final": None},
+    {"thought": "انتهى", "action": None, "final": "حُسب المتوسط ونُشر ملف الخلاصة في اللوحة."},
+    "أنجزت الواحة خطوتين: حساب المتوسط ثم نشر الخلاصة. النتيجة 18. "
+    "هذه إجابة تجريبية من وضع العرض (AGENT_FAKE=1)، وليست من نموذج حقيقي.",
+]
+
+
+def agent_available():
+    return AGENT_FAKE or ai_mode() != "disabled"
+
+
+def agent_forces_inline():
+    """Run the loop inside the request instead of a queue.
+
+    Two deployment shapes cannot use a background worker: PromptQL mode (only the
+    request carries the visitor's gateway token) and serverless (Vercel freezes the
+    container the moment the response is sent, so a queued task would never run).
+    """
+    return ai_mode() == "promptql" or bool(os.environ.get("VERCEL"))
+
+
+def agent_state():
+    """Public label of the agent AI path (never a credential)."""
+    if AGENT_FAKE:
+        return "demo"
+    return ai_mode()
+
+
+def agent_provider(task=None, visitor_token=None, timeout=None):
+    """The provider for every step of a task. Chosen once, never switched."""
+    if AGENT_FAKE:
+        from agent.providers import FakeProvider
+        return FakeProvider(model="waha-demo", script=list(FAKE_SCRIPT))
+    mode = ai_mode()
+    model = AgentConfig.MODEL or PROVIDERS["gemini"]["model"]
+    timeout = timeout or AgentConfig.PROVIDER_TIMEOUT_SECONDS
+    provider = (task or {}).get("provider", "gemini")
+    if provider == "nvidia":
+        model = PROVIDERS["nvidia"]["model"]
+    if mode == "promptql":
+        base = PROMPTQL_API_URL.rstrip("/")
+        if provider == "nvidia":
+            config = PROVIDERS["nvidia"]
+            url = (f"{base}/v1/integration/{config['id']}/integrate.api.nvidia.com"
+                   f"/v1/chat/completions")
+            return GatewayProvider("nvidia", model, url, visitor_token, wire="openai",
+                                   label="NVIDIA", timeout=timeout)
+        config = PROVIDERS["gemini"]
+        url = (f"{base}/v1/integration/{config['id']}/generativelanguage.googleapis.com"
+               f"/v1beta/models/{model}:generateContent")
+        return GatewayProvider("gemini", model, url, visitor_token, wire="gemini",
+                               label="Gemini", timeout=timeout)
+    if provider == "nvidia":
+        raise GenerationFailure(
+            "NVIDIA متاح فقط عبر بوابة PromptQL باتصال شخصي للزائر؛ الوضع المستقل يدعم Gemini.",
+            503, "nvidia_requires_gateway")
+    return GeminiProvider(model, GEMINI_API_KEY, timeout=timeout)
+
+
+def agent_record_cooldown(provider, user_id, retry_after):
+    """Mirror the chat path: only NVIDIA rate limits write cooldown rows."""
+    if provider != "nvidia":
+        return
+    with connect() as db:
+        upsert_nvidia_rate_limit_cooldowns(db, user_id, retry_after)
+
+
+def agent_deps(visitor_token=None, inline=False):
+    # Resolved lazily: the queue worker is built from these deps, and the
+    # approval handshake lives on the service that owns them.
+    hooks = {"record_cooldown": agent_record_cooldown}
+    if not inline:
+        hooks["wait_for_approval"] = lambda call_id, timeout: agent_service.wait_for_approval(
+            call_id, timeout)
+    return {
+        "store": agent_store,
+        "config": AgentConfig,
+        "tools": agent_tools,
+        "provider_factory": lambda task=None: agent_provider(task=task, visitor_token=visitor_token),
+        "skills": SKILLS,
+        "limits": {"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR, "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
+        "hooks": hooks,
+        "inline": inline,
+    }
+
+
+agent_service = Service(AgentDeps(**{k: v for k, v in agent_deps().items() if k != 'inline'}))
+
+
+def initialize_agent():
+    """Additive agent schema, then recover tasks orphaned by a restart.
+
+    Runs at import like `initialize()`: on Render free (and on Vercel) the
+    process can be recycled at any moment, so boot-time repair is the only
+    place that reliably runs.
+    """
+    return agent_service.bootstrap()
+
+
 initialize()
+initialize_agent()
 
 
 def fail(message, status=400, code="invalid_request"):
@@ -468,7 +621,9 @@ def index():
 def health():
     # Deliberately shallow: no DB query, so keep-alive pings do not wake a
     # scale-to-zero Postgres. Use /readyz for a deep check.
-    return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode())
+    return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode(),
+                   agent={"workers": AgentConfig.WORKERS, "queue": agent_service.queue_size(),
+                          "state": agent_state(), "inline": agent_forces_inline()})
 
 
 @app.get("/readyz")
@@ -510,6 +665,10 @@ def me():
                     "requires_personal_connection": k == "nvidia"} for k, v in PROVIDERS.items()],
         nvidia_budget={"per_minute": NVIDIA_PER_MINUTE, "per_24h": NVIDIA_PER_DAY,
                        "scope": "all_app_visitors", "free_quota_verified": False},
+        agent={"enabled": agent_available(), "inline": agent_forces_inline(), "demo": AGENT_FAKE,
+               "model": (AgentConfig.MODEL or PROVIDERS["gemini"]["model"])
+               if agent_available() and not AGENT_FAKE else ("waha-demo" if AGENT_FAKE else None),
+               "tools": [item["name"] for item in agent_tools.available(AgentConfig)]},
         sample_data=True
     )
 
@@ -904,6 +1063,256 @@ def message(sid):
                            completion_tokens=? WHERE id=?""",
                     (attempt_status, int((time.time() - now) * 1000), usage.get("prompt_tokens"),
                      usage.get("completion_tokens"), nvidia_attempt_id))
+
+
+# --- Agent runtime API --------------------------------------------------------
+# Same identity, CSRF, CORS and rate-limit rules as the chat path: `protect()`
+# already gates every /api/ POST, and provider calls are booked into the shared
+# `attempts` table by the runtime itself.
+AGENT_STREAM_SECONDS = max(2, min(60, int(os.environ.get("AGENT_STREAM_SECONDS", "20"))))
+
+
+class _InlineLimits:
+    """Config proxy used when a task runs inside the request (PromptQL mode).
+
+    A request-bound agent cannot wait for approvals and must stay short, so the
+    loop gets a reduced step/AI budget while every other knob is inherited.
+    """
+
+    def __init__(self, base, **overrides):
+        self.__dict__["_base"] = base
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(self.__dict__["_base"], name)
+
+
+def agent_owner():
+    return g.visitor["id"] if g.visitor else None
+
+
+def agent_client_key():
+    return "ip:" + hashlib.sha256(client_ip().encode()).hexdigest()
+
+
+@app.get("/api/agent/config")
+def agent_config():
+    mode = ai_mode()
+    inline = agent_forces_inline()
+    return jsonify(
+        enabled=agent_available(),
+        ai_mode="demo" if AGENT_FAKE else mode,
+        demo=AGENT_FAKE,
+        model=(AgentConfig.MODEL or PROVIDERS["gemini"]["model"]) if mode != "disabled" else None,
+        inline=inline,
+        tools=agent_tools.available(AgentConfig),
+        limits=AgentConfig.describe(),
+        providers=[{"key": key, "label": item["label"],
+                    "allowed": key == "gemini" or mode == "promptql"}
+                   for key, item in PROVIDERS.items()],
+        limits_note=("الأدوات التي تحتاج موافقة تُرفض في وضع PromptQL لأن الطلب "
+                     "لا يستطيع الانتظار" if inline else None),
+        sample_data=True,
+    )
+
+
+@app.post("/api/agent/tasks")
+def agent_create_task():
+    user, now = agent_owner(), time.time()
+    data = request.get_json(silent=True) or {}
+    goal = str(data.get("goal", "")).strip()
+    if not 8 <= len(goal) <= AgentConfig.MAX_GOAL_CHARS:
+        return fail("اكتب هدفاً بين 8 و" + str(AgentConfig.MAX_GOAL_CHARS) + " حرفاً.")
+    provider = data.get("provider", "gemini")
+    if provider not in PROVIDERS:
+        return fail("اختر مزوّد نموذج صحيحاً.")
+    if not agent_available():
+        return fail("خدمة AI غير مفعّلة على هذا الخادم بعد.", 503, "ai_disabled")
+    if provider == "nvidia" and ai_mode() != "promptql":
+        return fail("NVIDIA متاح فقط عبر بوابة PromptQL باتصال الزائر الشخصي؛ "
+                    "الوضع المستقل يدعم Gemini.", 503, "nvidia_requires_gateway")
+    with connect() as db:
+        cooldown_until = active_provider_cooldown(db, provider, user, now)
+    if cooldown_until > now:
+        response, status = fail("هذا المزوّد في فترة انتظار. لن يتم التحويل تلقائياً لمزوّد آخر.",
+                                429, "provider_cooldown")
+        response.headers["Retry-After"] = str(max(1, int(cooldown_until - now)))
+        return response, status
+    if agent_store.count_active(user) >= AgentConfig.MAX_ACTIVE_PER_USER:
+        return fail("لديك مهمة قيد التشغيل الآن. انتظر انتهاءها أو ألغها.", 409, "agent_busy")
+    mode = "demo" if AGENT_FAKE else ai_mode()
+    inline = agent_forces_inline()
+    serverless = bool(os.environ.get("VERCEL"))
+    model = (AgentConfig.MODEL or PROVIDERS[provider]["model"]) if not AGENT_FAKE else "waha-demo"
+    inline_config = None
+    if inline:
+        # A request-bound agent has to finish before the platform does: shorter
+        # loop, fewer calls, tighter provider timeout, earlier DB deadline.
+        inline_config = _InlineLimits(
+            AgentConfig,
+            MAX_STEPS=min(1 if serverless else 2, AgentConfig.MAX_STEPS),
+            MAX_AI_CALLS=min(3 if serverless else 4, AgentConfig.MAX_AI_CALLS),
+            PROVIDER_TIMEOUT_SECONDS=min(25, AgentConfig.PROVIDER_TIMEOUT_SECONDS) if serverless
+            else AgentConfig.PROVIDER_TIMEOUT_SECONDS,
+            DEADLINE_SECONDS=min(45, AgentConfig.DEADLINE_SECONDS) if serverless
+            else AgentConfig.DEADLINE_SECONDS)
+    task_id = agent_store.create_task(
+        user, goal, provider, model,
+        now + (inline_config or AgentConfig).DEADLINE_SECONDS, agent_client_key())
+    if inline:
+        agent = Agent(AgentDeps(store=agent_store, config=inline_config, tools=agent_tools,
+                                provider_factory=lambda task=None: agent_provider(
+                                    task=task,
+                                    visitor_token=None if serverless else g.visitor["token"],
+                                    timeout=inline_config.PROVIDER_TIMEOUT_SECONDS),
+                                skills=SKILLS,
+                                limits={"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR,
+                                        "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
+                                hooks={"record_cooldown": agent_record_cooldown}, inline=True))
+        task = agent.run(task_id) or agent_store.get_task(task_id, user)
+        return jsonify(task=task, mode="inline"), 201
+    agent_service.submit(task_id)
+    task = agent_store.get_task(task_id, user)
+    return jsonify(task=task, mode="queued",
+                   poll="./api/agent/tasks/" + task_id,
+                   stream="./api/agent/tasks/" + task_id + "/stream"), 201
+
+
+@app.get("/api/agent/tasks")
+def agent_list_tasks():
+    user = agent_owner()
+    if not user:
+        return jsonify(tasks=[])
+    return jsonify(tasks=agent_store.list_tasks(user, limit=20))
+
+
+@app.get("/api/agent/tasks/<task_id>")
+def agent_get_task(task_id):
+    task = agent_store.get_task(task_id, agent_owner())
+    if task is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    return jsonify(task=task)
+
+
+@app.get("/api/agent/tasks/<task_id>/events")
+def agent_task_events(task_id):
+    user = agent_owner()
+    if agent_store.get_task(task_id, user) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    try:
+        cursor = max(0, int(request.args.get("cursor", 0)))
+    except ValueError:
+        cursor = 0
+    events = agent_store.events_after(task_id, cursor, limit=100)
+    return jsonify(events=events, cursor=events[-1]["id"] if events else cursor,
+                   status=agent_store.task_status(task_id))
+
+
+@app.get("/api/agent/tasks/<task_id>/stream")
+def agent_task_stream(task_id):
+    user = agent_owner()
+    if user and agent_store.get_task(task_id, user) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+
+    def feed():
+        cursor, deadline = 0, time.time() + AGENT_STREAM_SECONDS
+        while True:
+            for item in agent_store.events_after(task_id, cursor, limit=50):
+                cursor = max(cursor, item["id"])
+                payload = json.dumps(item["payload"], ensure_ascii=False)
+                yield f"id: {item['id']}\nevent: {item['type']}\ndata: {payload}\n\n"
+            status = agent_store.task_status(task_id)
+            if status is None:
+                yield "event: gone\ndata: {}\n\n"
+                return
+            yield f"event: status\ndata: {{\"status\": \"{status}\"}}\n\n"
+            if status not in ("queued", "running", "awaiting_approval") or time.time() > deadline:
+                yield "event: close\ndata: {}\n\n"
+                return
+            time.sleep(0.4)
+
+    response = app.response_class(feed(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.post("/api/agent/tasks/<task_id>/approve")
+def agent_approve(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    data = request.get_json(silent=True) or {}
+    call_id = str(data.get("call_id", ""))
+    approve = bool(data.get("approve", False))
+    if not call_id:
+        return fail("أرسل معرّف الطلب.")
+    if not agent_service.decide(call_id, approve):
+        return fail("هذا الطلب لم يعد بانتظار موافقتك (انتهت صلاحيته أو نُفّذ).",
+                    409, "approval_stale")
+    return jsonify(ok=True, decision="approved" if approve else "denied")
+
+
+@app.post("/api/agent/tasks/<task_id>/cancel")
+def agent_cancel(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    cancelled = agent_service.cancel(task_id)
+    return jsonify(ok=bool(cancelled), status=agent_store.task_status(task_id))
+
+
+@app.post("/api/agent/tasks/<task_id>/delete")
+def agent_delete_task(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    agent_service.cancel(task_id)
+    return jsonify(ok=agent_store.delete_task(task_id, agent_owner()))
+
+
+@app.get("/api/agent/artifacts/<int:artifact_id>")
+def agent_artifact(artifact_id):
+    artifact = agent_store.get_artifact(artifact_id, agent_owner())
+    if artifact is None:
+        return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(artifact=artifact)
+
+
+@app.post("/api/agent/artifacts/<int:artifact_id>/delete")
+def agent_artifact_delete(artifact_id):
+    user = agent_owner()
+    if agent_store.get_artifact(artifact_id, user) is None:
+        return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(ok=agent_store.delete_artifact(artifact_id, user))
+
+
+@app.get("/api/agent/memory")
+def agent_memory_list():
+    user = agent_owner()
+    if not user:
+        return jsonify(memory=[])
+    return jsonify(memory=agent_store.list_memory(user, limit=AgentConfig.MEMORY_MAX_ITEMS))
+
+
+@app.post("/api/agent/memory")
+def agent_memory_add():
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content", "")).strip()
+    kind = str(data.get("kind", "note")).strip() or "note"
+    if kind not in ("note", "preference", "goal"):
+        return fail("نوع الملاحظة غير معروف.")
+    if not 3 <= len(content) <= 400:
+        return fail("الملاحظة يجب أن تكون بين 3 و400 حرف.")
+    memory_id = agent_store.remember(agent_owner(), kind, content, limit=AgentConfig.MEMORY_MAX_ITEMS)
+    return jsonify(id=memory_id, items=agent_store.memory_count(agent_owner())), 201
+
+
+@app.post("/api/agent/memory/<int:memory_id>/delete")
+def agent_memory_delete(memory_id):
+    if not agent_store.delete_memory(agent_owner(), memory_id):
+        return fail("الملاحظة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    return jsonify(ok=True)
+
 
 
 if __name__ == "__main__":
