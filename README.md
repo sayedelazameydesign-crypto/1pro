@@ -3,10 +3,13 @@
 قالب جاهز للرفع إلى المستودع المقترح:
 https://github.com/sayedelazameydesign-crypto/1pro
 
-**الحالة:** الكود على `main` مُجهّز ومُختبر محلياً ومرفوع. الكتالوج منشور على Pages ويعمل؛
-أُعلن الإصدار `v0.1.0`. ما زال مؤجَّلاً: إعادة نشر Pages (النشرة الحيّة متأخرة بنشرة عن
-آخر `main`)، تفعيل Discussions، ونشر الخادم العام (يتطلب حسابات المالك). حالة CI الفعلية
-تُعرض في Actions. لا تحتاج إنشاء مستودع آخر؛ يمكن استخدام `1pro` الموجود.
+**الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
+على `sqlite` و`postgres` معًا: 249 اختبار بايثون + 15 فحص عقد متصفح + فحوص البايت
+`rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
+`v0.1.0`. **ما لم يحدث بعد:** لا خادم منشور — `docs/` يبقى كتالوجًا ثابتًا ما دام
+`docs/data/config.json.api_base` فارغًا، ولا Neon/Render/Vercel مُهيَّأ من هنا، ولا مفتاح
+خدمة في المستودع. ما بقي: إعادة نشر Pages، تفعيل Discussions، **اختر LICENSE**، ثم نشر
+الخادم (يتطلب حسابات المالك) وأول smoke حيّ. حالة CI الفعلية تُعرض في Actions.
 
 ## نسختان واضحتان
 
@@ -269,6 +272,16 @@ python -m http.server 8080 --directory docs    # http://localhost:8080 → مس�
    curl -sS --max-time 90 -i https://<service>.onrender.com/readyz   # 204 بلا جسم
    ```
 
+   يفحص السكربت: `/health` (بلا لمس قاعدة بيانات) و`/readyz` (يوقظ Neon ويثبت أن
+   `initialize()` بنى المخطط)، وCORS من أصل Pages مع رفض أي أصل أجنبي، ودورة هوية كاملة
+   (`register` ← `/api/me`)، و`/api/agent/config` حيث يجب أن تظهر **كتلة `execution`**
+   (الوضع + الميزانية + `new_knobs: 0`)، ومهمة حقيقية حتى حالة طرفية مع قراءة سجل الأحداث،
+   و**memory** كتابةً وقراءةً، و**artifact** المهمة قراءةً لمالكها، و`/api/search` أنه يُرجع
+   `RAG_LOCAL` باستشهاد حرفي وأن سؤالًا خارج الكتالوج يُرجع **0 نتيجة** بـ`deferred`. على
+   `inline` (Vercel) لا يُرجّ السكربت طابورًا: المهمة تنتهي داخل الطلب فيقرأ الحالة من سجل
+   الأحداث ويُكمل. `ai_enabled=false` فشلٌ **متوقّع** على خادم بلا `GEMINI_API_KEY`؛
+   و`SMOKE_TOKEN`/`SMOKE_CSRF` يعيدان استخدام زائر عند حدّ `register` (5/ساعة/IP).
+
    استخدم `--max-time 90` دائماً: أول طلب بعد خمول Render المجاني قد يستغرق
    ~50 ثانية. نجاح `/readyz` بـ204 يعني أن `initialize()` بنى الجداول على
    قاعدة Neon الفارغة.
@@ -375,6 +388,15 @@ python app.py
       artifacts، ذاكرة، SSE، ومحوّل Provider لا يعرف Flask ولا مزوّداً بعينه.
 - [x] `scripts/deploy_doctor.py`: فحص بيئة النشر بلا شبكة وبلا طباعة مفاتيح (+self-test في CI).
 - [x] إعلان الإصدار `v0.1.0` على `main`.
+- [x] طبقات الاسترجاع والتقييم وعقد النشر (PR #8، دُمجت عند `9a7af62`): **R1** فهرس حتمي
+      بمصدر وبلا فقد · **R2** `GET /api/search` فوق فهرس R1 **كما هو** + تسمية المتصفح
+      لمصدره (`RAG_LOCAL`/`BROWSER_FALLBACK`) · **R3** `kb_search` داخل حلقة الوكيل عبر R2
+      وحده (5 نتائج، 3000 حرف أدلة، استشهاد حرفي، `ToolError` عند فهرس مفقود) ·
+      **R4** `eval/train.json` + `scripts/rag_eval.py` يقيسان ويعملان بوابة CI ·
+      **R6** `ExecutionMode {queued,inline}` سياسةً في `backend/agent/execution.py`،
+      وبلا متغيرات مضيف جديدة.
+- [x] **R5 (المتجهات) مُقفَلة بالقياس لا بالرأي:** `recall@5 = 0.9375 ≥ 0.80` على 6 مهارات
+      و2882 بايت و`pdf_count = 0` ⇒ `vector_enabled: false`. تُفتح عند تخطّي حدّ مقيس.
 - [ ] إعادة نشر Pages بنشرة واحدة (آخر نشر سابق على `docs/assets/app.js` و`config.json`
       الحاليَّين): Actions → «Publish static skill catalog to Pages» → Run workflow.
 - [ ] إنشاء حسابات Render/Neon ومفاتيح الخدمة ونشر الخادم فعلياً (يتطلب
