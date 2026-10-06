@@ -161,8 +161,11 @@
                   {raw: ragMode});
     }
     if (ragMode === 'NONE') {
-      return card('source', 'مصدر البحث', 'من أين جاءت النتائج المعروضة', OFF,
-                  'NONE: لا مصدر (لا خادم مربوط، فلا بحث على الخادم)', {raw: ragMode});
+      // Not `off`: NONE means no retrieval has happened yet (nobody searched), or no server
+      // is connected. Claiming "disabled" would state a cause this page cannot see.
+      return card('source', 'مصدر البحث', 'من أين جاءت النتائج المعروضة', UNKNOWN,
+                  'NONE: لا استرجاع في هذه اللحظة — لم يُطلب بحث من الخادم بعد (أو لا خادم مربوط)',
+                  {raw: ragMode});
     }
     return card('source', 'مصدر البحث', 'من أين جاءت النتائج المعروضة', UNKNOWN, NOT_READ);
   }

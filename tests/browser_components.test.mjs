@@ -171,6 +171,14 @@ scenario('browser filtering is never presented as retrieval', async () => {
   assert.match(source.detail, /ليست استرجاع/);
 });
 
+scenario('an untouched search source is unknown, not "turned off"', async () => {
+  const out = components.build({apiBase: 'https://api.test', health, agentConfig, ragMode: 'NONE'});
+  const source = byKey(out, 'source');
+  assert.equal(source.state, 'unknown',
+    'NONE means "no retrieval yet", and the page cannot know why -- so it cannot say off');
+  assert.match(source.detail, /لم يُطلب بحث|لم يطلب/);
+});
+
 scenario('a partial read keeps the unread cards unknown and names the endpoint', async () => {
   const out = components.build({apiBase: 'https://api.test', health: health, agentConfig: null,
                                 ragMode: 'RAG_LOCAL'});

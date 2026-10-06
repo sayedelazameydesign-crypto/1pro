@@ -342,7 +342,7 @@ PR بعد أن صار العدد ضعفه.
 | **المجموع** | **257** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
-فحص عقد المكوّنات: 14 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
+فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
 إلا إذا وصلها payload من `/health` أو `/api/agent/config`، وأنّ ما لم يُقرأ يُكتب «غير معروف».
 فحص `--self-test` لحساب المقاييس في R4: 7 فحوص (لا تُحتسب أعلاه؛ ليست `tests/test_*.py`).## 4) كلفة المجانية، بالأرقام الصريحة
 
