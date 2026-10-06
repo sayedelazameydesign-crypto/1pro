@@ -47,13 +47,22 @@ from pathlib import Path
 # The catalog loader/validator is imported, never copied: one schema decides what a
 # skill is, so this stage cannot drift from what Pages and the backend publish.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The shared module sits in backend/ one directory up; resolve it independently of
+# the working directory, exactly as the Vercel wrapper does for the app itself.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from build_catalog import ROOT, json_bytes, load_skills  # noqa: E402
+# The shared folding rules are imported, not copied: R2 queries with these exact
+# functions, so postings and query keys can never drift apart. It lives in backend/
+# because Vercel ships that directory and excludes scripts/. The names below stay
+# re-exported here for the pipeline stages and the tests that call them through R1.
+from rag_text import (PARAGRAPH_SPLIT, SENTENCE_SPLIT, STOPWORDS, STEMMER, TOKENIZER,
+                      content_terms, normalize_search, normalize_text, stem, tokenize)
 
 FORMAT = "waha.rag.v1"
 PIPELINE = {
     "chunker": "block-greedy-overlap/1",
-    "tokenizer": "waha.word-ar-lite/1",
-    "stemmer": "waha.affix-lite/1",
+    "tokenizer": TOKENIZER,
+    "stemmer": STEMMER,
     "max_chars": 1600,
     "min_chars": 120,
     "overlap_ratio": 0.15,
@@ -73,27 +82,6 @@ METADATA_FIELDS = ("id", "name", "category", "difficulty", "icon", "color", "tag
 DOC_KEYWORD_FIELDS = ("name", "category", "difficulty")
 GATE_THRESHOLDS = {"corpus_bytes": 200_000, "skill_count": 50, "pdf_count": 1,
                    "lexical_recall_at5": 0.80}
-STOPWORDS = frozenset("""
-في على من إلى عن مع هذا هذه ذلك التي الذي هو هي ما لا أن إن لكن أو ثم قد هل كل
-بعض بين عند لدى كما لأنه لأنها بحيث هنا هناك يا أي ماذا كيف لماذا متى ال و ف ب ك ل
-بل نحو حتى إذا لم لن غير ذات عين هو هي هما هم هن ان انمااما
-the a an and or to in for of on with that this it is are was were be been as at by
-from not no yes you your we our they their i he she its will would can could should
-do does did have has had which who whom what when where why how all any some more
-""".split())
-ARABIC_MARKS = re.compile(r"[ً-ْٰـ]")
-ALEF_FAMILY = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي",
-                             "ؤ": "و", "ئ": "ي", "ة": "ه", "ﻻ": "لا"})
-PUNCT_FOLD = str.maketrans({"،": ",", "؛": ";", "؟": "?", "–": "-", "—": "-",
-                            "‘": "'", "’": "'", "“": '"', "”": '"'})
-WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
-PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
-SENTENCE_SPLIT = re.compile(r"(?<=[.!?؟])\s+")
-PREFIXES = ("وال", "بال", "فال", "كال", "لل", "ال", "و", "ف", "ب", "ك", "ل")
-SUFFIXES = ("اتهم", "اتها", "ون", "ين", "ات", "ها", "هم", "كن", "نا", "ية", "يه",
-            "اً", "ًا", "ة", "ى", "ه")
-
-
 class RagError(ValueError):
     """A corpus contract was violated; refuse to write a partial index."""
 
@@ -102,54 +90,9 @@ def sha256_hex(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-# --------------------------------------------------------------------------- text
+# Text folding lives in backend/rag_text.py (see the import above): indexing here and
+# querying in backend/rag_search.py must never disagree about what a word is.
 
-def normalize_text(value):
-    """Display hygiene only: keeps every character that carries meaning.
-
-    Spelling folds that lose information (diacritics, alef variants) happen in
-    normalize_search, so the evidence stored in ``text`` stays faithful.
-    """
-    text = unicodedata.normalize("NFKC", str(value)).replace("\r\n", "\n").replace("\r", "\n")
-    out, blank = [], 0
-    for line in (raw.strip() for raw in text.split("\n")):
-        if line:
-            out.append(line)
-            blank = 0
-        elif out and blank == 0:
-            out.append("")
-            blank = 1
-    return "\n".join(out).strip()
-
-
-def normalize_search(text):
-    return ARABIC_MARKS.sub("", text).translate(ALEF_FAMILY).translate(PUNCT_FOLD).lower()
-
-
-def tokenize(text):
-    return WORD_RE.findall(normalize_search(text))
-
-
-def content_terms(text):
-    return [term for term in tokenize(text) if term not in STOPWORDS and len(term) > 1]
-
-
-def stem(word):
-    """Cheap affix stripping used ONLY to build an expansion dictionary; surface
-    terms stay canonical, so a wrong guess cannot lose recall for anyone."""
-    best = word
-    arabic = "\u0621" <= word[:1] <= "\u064a"
-    for prefix in PREFIXES:
-        residual = best[len(prefix):]
-        if best.startswith(prefix) and len(residual) >= 3 and (
-                not arabic or "\u0621" <= residual[:1] <= "\u064a"):
-            best = residual
-            break
-    for suffix in SUFFIXES:
-        if best.endswith(suffix) and len(best) - len(suffix) >= 3:
-            best = best[: -len(suffix)]
-            break
-    return best if len(best) >= 3 else word
 
 
 # ------------------------------------------------------------------- section model

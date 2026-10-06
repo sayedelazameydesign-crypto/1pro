@@ -106,9 +106,19 @@ class CommittedArtifacts(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("outdated index.json", output)
 
+    def test_r1_and_r2_share_one_folder(self):
+        # The extraction of backend/rag_text.py must not have changed what R1 writes.
+        import rag_text
+        self.assertIs(rag_index.normalize_search, rag_text.normalize_search)
+        self.assertIs(rag_index.stem, rag_text.stem)
+        for name in ("index.json", "corpus.jsonl", "manifest.json", "stats.json"):
+            self.assertTrue((OUT / name).exists(), name)
+
     def test_stdlib_only_imports(self):
+        # stdlib plus the two first-party modules R1 must share (the catalog loader,
+        # and the folding rules R2 queries with). Anything else is a new dependency.
         allowed = {"argparse", "hashlib", "json", "re", "sys", "unicodedata", "pathlib",
-                   "build_catalog"}
+                   "build_catalog", "rag_text"}
         tree = ast.parse((ROOT / "scripts/rag_index.py").read_text(encoding="utf-8"))
         found = set()
         for node in ast.walk(tree):
