@@ -175,6 +175,32 @@ git push -u origin main
   مستخدم، و120 طلب AI/ساعة لكل IP.
 - البيانات تُحفظ في Postgres، ولا شيء مهم على قرص الخادم المؤقت.
 
+### بديل النشر: Vercel (خطة Hobby)
+
+`vercel.json` + `api/index.py` يشغّلان نفس تطبيق Flask كدالة Serverless واحدة.
+خطة Hobby مجانية **ولا تطلب بطاقة ائتمانية**، فلا حاجة لأي «مسار التفاف»
+للنشر. انتبه إلى أن Hobby مشروطة بالاستخدام الشخصي غير التجاري في شروط
+Vercel؛ المشروع التجاري يتطلب Pro.
+
+- **`maxDuration: 60`**: هذا السقف مضمون على Hobby. القيمة 300 لا تُقبل إلا
+  حيث يكون Fluid Compute مفعلاً، وقد تُرفض في المشاريع الأقدم.
+- **لا تجمع `builds` مع `functions`** في `vercel.json`: الاثنان متعارضان
+  ويفشل البناء برسالة «Conflicting functions and builds». كذلك `excludeFiles`
+  صالح **داخل** `functions` فقط وليس في جذر الملف.
+- **`/tmp` وحده قابل للكتابة**: `backend/app.py` يحوّل مسار SQLite وملف
+  `csrf.secret` إلى `/tmp` عند وجود المتغير `VERCEL`. لكن `/tmp` زائل ويُعاد
+  تدويره، **لذلك `WAHA_SECRET` يجب أن يكون مضبوطاً في Production** وإلا
+  بُطلت جلسات الزوار مع كل إعادة تدوير.
+- **متغيرات Production فقط**: `DATABASE_URL` و`GEMINI_API_KEY` و`WAHA_SECRET`
+  و`WAHA_ALLOWED_ORIGINS`. **يُمنع** ضبط `WAHA_TRUST_PROMPTQL` أو
+  `PROMPTQL_PLATFORM_API_URL` في Vercel — الأول يجعل ترويسة الهوية تُقبل
+  **بدون تحقق توقيع** (انتحال هوية وتجاوز للحدود)، والثاني يحوّل مسار AI إلى
+  البوابة ويُلغي مسار `GEMINI_API_KEY`.
+- **Deployment Protection**: أبقِ **Standard Protection** مفعلاً. لا تختر
+  «All Deployments» حتى تبقى روابط المعاينة محمية دون كسر Production.
+- **اتصالات Neon**: نمط Serverless يفتح اتصالاً جديداً مع كل استدعاء بارد؛
+  راقب Neon Console تحسباً لاستنفاد الاتصالات واستخدم رابط **pooled**.
+
 ## خادم PromptQL
 
 `backend/app.py` يتوقع أن يكون الوصول عبر بوابة PromptQL الموثوقة، وأن

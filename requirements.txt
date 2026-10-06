@@ -1,0 +1,7 @@
+# Vercel installs the requirements.txt at the repository root. The runtime pins
+# live in backend/requirements.txt so Render and Vercel cannot drift apart.
+#
+# Do NOT re-pin psycopg here without the [binary] extra: the serverless image
+# has no system libpq, and a bare `psycopg==...` resolves to the non-binary
+# wheel that needs libpq at import time.
+-r backend/requirements.txt
