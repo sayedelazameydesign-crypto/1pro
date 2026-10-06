@@ -373,6 +373,16 @@ class Endpoint(unittest.TestCase):
         payload = self.client.get("/api/search?q=بريد&k=1").get_json()
         self.assertLessEqual(len(payload["results"]), 1)
 
+    def _table_names(self):
+        """Dialect-neutral: CI runs this suite against sqlite *and* Postgres, and a
+        hard-coded sqlite_master would only ever exercise one of them."""
+        if self.backend.POSTGRES:
+            sql = "SELECT tablename AS n FROM pg_tables WHERE schemaname = 'public'"
+        else:
+            sql = "SELECT name AS n FROM sqlite_master WHERE type = 'table'"
+        with self.backend.connect() as db:
+            return {row["n"] for row in self.backend.run(db, sql).fetchall()}
+
     def test_search_writes_nothing_to_the_database(self):
         with self.backend.connect() as db:
             before = self.backend.run(db, "SELECT COUNT(1) AS n FROM attempts").fetchone()["n"]
@@ -381,10 +391,10 @@ class Endpoint(unittest.TestCase):
         with self.backend.connect() as db:
             after = self.backend.run(db, "SELECT COUNT(1) AS n FROM attempts").fetchone()["n"]
         self.assertEqual(before, after, "a search must not consume the chat budget")
-        with self.backend.connect() as db:
-            tables = {row[0] for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertNotIn("rag_chunks", tables, "R2 must not create a parallel store")
+        tables = self._table_names()
+        self.assertTrue(tables, "the schema should have been created by now")
+        parallel = {name for name in tables if any(hint in name for hint in ("rag", "chunk", "corpus", "vector"))}
+        self.assertEqual(parallel, set(), "R2 must not create a parallel store beside data/rag")
 
     def test_health_advertises_the_retrieval_capability_honestly(self):
         payload = self.client.get("/health").get_json()
