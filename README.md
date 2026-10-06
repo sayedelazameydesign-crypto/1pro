@@ -120,6 +120,11 @@ git push -u origin main
 |---|---|
 | `GET /api/search?q=&k=&section=&skill=` | نتائج مرتبة فوق فهرس R1: `citation` و`chunk_id` حرفيان من المقطع، مع `score` و`explain` و`coverage`. `k` حتى 20 (الأكثر يُقصّ لا يُرفض). **لا عتبة قرار**: `no_answer.decision` إما `deferred` أو `unsearchable`، ومن يملك العتبة هو `data/rag/eval-report.json` في R4 |
 
+**R3**: `kb_search` داخل حلقة الوكيل هي نفس الدالة — للقراءة فقط، بلا موافقة، بسقف 5
+نتائج و`MAX_KB_CONTEXT_CHARS=3000` حرف من الأدلة لكل لفّة، ومع `citation` مُمرَّرًا حرفيًا.
+فهرس مفقود هناك يُبلَّغ `ToolError` («المكتبة غير متاحة») لا «لا نتائج»، حتى لا يُلغَس عطل
+بنية تحتية في مقياس `no-answer-rate`.
+
 بلا فهرس → `503 rag_index_missing` مع السبب في `/health.rag.reason`. والواجهة
 (`docs/assets/search.js`) تسمّي مصدرها دائمًا: `RAG_LOCAL` من الخادم، أو
 `BROWSER_FALLBACK` عند انقطاعه أو انتهاء المهلة (2.5 ثانية) فتعرض التصفية المحلية
@@ -144,7 +149,7 @@ git push -u origin main
 | `GET /api/agent/artifacts/<id>` | ملف من لوحة العرض (html/css/js/json/markdown) |
 | `GET/POST /api/agent/memory` · `…/<id>/delete` | ملاحظات المتعلّم التي تُقرأ كسياق فقط |
 
-**الأدوات المبنية:** `calculator` (تعبير رقمي بحارس AST)، `clock`، `skill_lookup`،
+**الأدوات المبنية:** `calculator` (تعبير رقمي بحارس AST)، `clock`، `skill_lookup`، `kb_search`،
 `memory_write`، `artifact_write`، و`web_fetch` (GET مع حارس SSRF، معطّل افتراضياً
 ويحتاج موافقة). **المرفوض عمداً:** تشغيل كود، shell، كتابة ملفات، متصفح، ومهام
 تتجاوز عمر الطلب — الخطة المجانية لا تعطي sandbox، فلا نعد بما لا نأمن عليه.

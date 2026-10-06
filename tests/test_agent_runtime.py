@@ -125,6 +125,67 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(task["calls"][0]["status"], "done")
         self.assertEqual(task["calls"][0]["result"]["result"], 4)
 
+    def test_kb_search_evidence_reaches_the_next_turn_and_the_report(self):
+        """R3's acceptance gate, end to end: Agent -> kb_search -> rag_search -> R1.
+
+        The citation must be visible in three places at once -- the persisted tool
+        result, the message handed back to the model, and the report -- and identical in
+        all three. Anything weaker would let a layer re-word the evidence.
+        """
+        import rag_search
+        expected = rag_search.search("كيف أحدد جمهور الرسالة", k=5)
+        self.assertTrue(expected["results"], "the shipped sample index must answer this")
+        citation = expected["results"][0]["citation"]
+
+        self.use_script([plan(["ابحث في المكتبة"]),
+                         action("kb_search", query="كيف أحدد جمهور الرسالة"),
+                         final(f"استنادًا إلى {citation}: ابدأ بالجمهور ثم الصياغة."),
+                         final(f"التقرير يعتمد على {citation}")])
+        created = self.create(goal="ساعدني أحدد جمهور رسالتي قبل الكتابة")
+        self.assertEqual(created.status_code, 201)
+        task = self.wait(created.get_json()["task"]["id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual([call["tool"] for call in task["calls"]], ["kb_search"])
+        call = task["calls"][0]
+        self.assertEqual(call["status"], "done")
+        self.assertFalse(call["approval_required"], "read-only retrieval must not pause the task")
+        self.assertIsNone(task["pending_call"], "nothing may wait for a human on a search")
+        result = call["result"]
+        self.assertEqual(result["evidence"], "RAG_LOCAL")
+        self.assertEqual(result["results"][0]["citation"], citation)
+        self.assertEqual(result["results"][0]["chunk_id"], expected["results"][0]["chunk_id"])
+        # ctx.rag_index_dir was injected by the app, so the agent read the repo's own
+        # index -- the same chunk count the HTTP endpoint reports, not a private copy.
+        self.assertEqual(result["corpus"]["chunks"], expected["index"]["chunks"])
+        self.assertEqual(result["corpus"]["chunks"], 18)
+        self.assertEqual(result["no_answer"]["decision"], "deferred")
+        self.assertNotIn("answer", result)
+        # The observation reached the next model turn verbatim, with its citation.
+        turns = [json.dumps(item["messages"], ensure_ascii=False) for item in self.fake.calls]
+        self.assertTrue(any("نتيجة الأداة" in turn and citation in turn for turn in turns),
+                        "the tool result must be fed back to the model, not swallowed")
+        self.assertIn(citation, task["report"])
+
+    def test_kb_search_reports_an_unavailable_library_as_an_error(self):
+        """Gate 5 inside the loop: infrastructure failure must not look like "no results"."""
+        import rag_search as rag_module
+        self.use_script([plan(["ابحث في المكتبة"]),
+                         action("kb_search", query="بريد"),
+                         final("المكتبة غير متاحة الآن، فأجبت من معرفتي دون استشهاد."),
+                         final("أُبلغ بعدم توفّر المكتبة")])
+        with patch.object(rag_module, "search",
+                          side_effect=rag_module.RagSearchUnavailable("index.json missing")):
+            created = self.create(goal="علّمني كتابة بريد مهني قصير")
+            task = self.wait(created.get_json()["task"]["id"])
+        self.assertEqual(task["status"], "completed", "a tool error must not kill the task")
+        call = task["calls"][0]
+        self.assertEqual(call["status"], "error")
+        self.assertIn("غير متاحة", call["error"])
+        self.assertNotIn("results", call["error"])
+        turns = [json.dumps(item["messages"], ensure_ascii=False) for item in self.fake.calls]
+        self.assertTrue(any("مكتبة المعرفة غير متاحة" in turn for turn in turns),
+                        "the model must be told the library was unavailable")
+
     def test_tool_results_are_persisted_as_events(self):
         self.use_script([plan(["اضبط تاريخاً"]), action("clock", offset_days=1),
                          final("تم"), final("تقرير")])

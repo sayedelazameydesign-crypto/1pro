@@ -131,19 +131,23 @@ class Budget(Exception):
 class ToolContext:
     """Everything a tool may touch. Deliberately tiny and secret-free."""
 
-    def __init__(self, user_id, task_id, store, config, skills):
+    def __init__(self, user_id, task_id, store, config, skills, rag_index_dir=None):
         self.user_id = user_id
         self.task_id = task_id
         self.store = store
         self.config = config
         self.skills = skills or []
+        # Where R2's committed index lives. Injected (never read from os.environ inside
+        # the agent) so the knowledge tool and GET /api/search can never point at two
+        # different indexes, and so a test can hand the loop a fixture directory.
+        self.rag_index_dir = rag_index_dir
 
 
 class Deps:
     """Runtime wiring, injected so the loop runs in tests with a fake provider."""
 
     def __init__(self, store, config, tools, provider_factory, skills=(), limits=None, hooks=None,
-                 inline=False):
+                 inline=False, rag_index_dir=None):
         self.store = store
         self.config = config
         self.tools = tools
@@ -151,6 +155,7 @@ class Deps:
         self.skills = list(skills or [])
         self.limits = dict(limits or {})
         self.hooks = dict(hooks or {})
+        self.rag_index_dir = rag_index_dir
         # Request-bound execution cannot pause for a human: tools that need an
         # approval are refused instead of blocking the request.
         self.inline = inline
@@ -325,7 +330,8 @@ class Agent:
             else:
                 reason = "أُلغيت المهمة قبل الموافقة."
             return json.dumps({"error": reason}, ensure_ascii=False), True
-        context = ToolContext(state["user_id"], task_id, store, config, self.deps.skills)
+        context = ToolContext(state["user_id"], task_id, store, config, self.deps.skills,
+                              self.deps.rag_index_dir)
         try:
             observation = tool.handler(context, args)
             store.complete_call(call_id, result=observation)

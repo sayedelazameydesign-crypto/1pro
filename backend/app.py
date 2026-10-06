@@ -454,6 +454,9 @@ def agent_deps(visitor_token=None, inline=False):
         "skills": SKILLS,
         "limits": {"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR, "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
         "hooks": hooks,
+        # R3 reads the same directory the HTTP endpoint does (WAHA_RAG_DIR honoured in
+        # one place), so an alternate index can never split retrieval in two.
+        "rag_index_dir": RAG_INDEX_DIR,
         "inline": inline,
     }
 
@@ -1216,7 +1219,8 @@ def agent_create_task():
                                 skills=SKILLS,
                                 limits={"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR,
                                         "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
-                                hooks={"record_cooldown": agent_record_cooldown}, inline=True))
+                                hooks={"record_cooldown": agent_record_cooldown}, inline=True,
+                                rag_index_dir=RAG_INDEX_DIR))
         task = agent.run(task_id) or agent_store.get_task(task_id, user)
         return jsonify(task=task, mode="inline"), 201
     agent_service.submit(task_id)

@@ -16,7 +16,7 @@ Flask app     (backend/app.py)   هوية زائر HMAC · CSRF · CORS · حد�
 Agent Runtime (backend/agent/)   plan → act → observe → reflect → report
       │
       ├── providers.py   Provider interface: Gemini direct · PromptQL gateway · Fake
-      ├── tools.py       Tool registry: حساب، وقت، بحث مهارة، ذاكرة، artifact، web_fetch
+      ├── tools.py       Tool registry: حساب، وقت، بحث مهارة، بحث المعرفة (kb_search)، ذاكرة، artifact، web_fetch
       ├── store.py       SQLite + Postgres: tasks · steps · events · tool_calls · memory · artifacts
       ├── runtime.py     الحلقة والميزانيات والموافقات
       └── service.py     طابور التنفيذ، خيوط العمل، handshake الموافقة
@@ -64,6 +64,7 @@ Neon Postgres                    خارج القرص المؤقت؛ لا شيء 
 | `WAHA_TRUST_PROMPTQL=1` على خدمة عامة | الترويسة تُقرأ بلا توقيع؛ `deploy_doctor` يرفضها |
 | ذاكرة بلا سقف | `agent_memory` يدور عند `AGENT_MEMORY_MAX_ITEMS`، ولا يُقرأ منه إلا آخر 8 عناصر كسياق |
 | وعد طاقة | `/api/agent/config` يُعلن `guaranteed_capacity: false`؛ الخطة المجانية مشتركة |
+| مسترجِع ثانٍ داخل `agent/` | `kb_search` تنادي `rag_search.search()` وحدها؛ لا BM25 ولا tokenizer ولا قراءة `corpus.jsonl` في `tools.py` (يُفحص نصيًا بعد تجريد الـdocstrings)، لأن نسخة ثانية من الترتيب تُنتج شهادتين مختلفتين لنفس السؤال حسب المسار |
 | عتبة «لا إجابة» في زمن الاسترجاع | R2 يرجّع درجة + metadata ويكتب `no_answer.decision: "deferred"`؛ العتبة يكتبها R4 في `data/rag/eval-report.json` لا مستخدمٌ للمعجم في `app.py` |
 | توسيع الاستعلام بالجذر الكامل | مقيسٌ لا متوهَّمًا: `stem()` أعاد «يوميه/يومين» من «اليوم» فأطاع سؤال سعر الصرف على مهارة إدارة الوقت. بقي نزع «ال» التعريف وحده، بوزن 0.45 ومعروَضًا في `inferred_terms` و`coverage: 0.0` |
 | جدول `attempts` لـ`/api/search` | العدّاد مشترك مع المحادثة (30 طلب AI/ساعة)؛ تسجيل كل بحث كان يأكل رصيد الزائر بلا مقابل — البحث بلا حالة أصلًا |

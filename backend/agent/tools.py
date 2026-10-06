@@ -11,6 +11,9 @@ Design rules, all enforced here rather than in the prompt:
   auto-approval for read-only tools.
 * Results are size-capped and JSON-serialisable, so a task can never store a
   megabyte of junk in the free Neon database.
+* `kb_search` delegates retrieval to `backend/rag_search.py` and is bound by
+  MAX_KB_CONTEXT_CHARS. The agent has no scorer, no tokenizer and no corpus reader of
+  its own, and it never rewrites a citation it was handed.
 """
 import ast
 import ipaddress
@@ -23,12 +26,32 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+import sys
+
+# R3 is a *thin* tool on purpose: it must call R2's scorer, never become a second one.
+# `backend/` is on sys.path in every entry point (app.py, the Vercel wrapper, the tests)
+# and this keeps that true when agent.tools is imported directly.
+_BACKEND = Path(__file__).resolve().parents[1]
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+import rag_search  # noqa: E402  (the only retrieval path allowed in the agent)
 
 MAX_FETCH_BYTES = 200_000
 MAX_RESULT_CHARS = 6000
 TEXT_CONTENT_TYPES = ("text/", "application/json", "application/xml", "+json", "+xml")
 ARTIFACT_KINDS = {"html": "text/html", "css": "text/css", "javascript": "text/javascript",
                   "markdown": "text/markdown", "json": "application/json"}
+# R3 budgets. MAX_KB_RESULTS keeps the loop reading a few strong rows instead of a
+# result page; MAX_KB_SNIPPET_CHARS bounds one row; MAX_KB_CONTEXT_CHARS bounds the
+# TOTAL evidence entering the next model turn, so a corpus that grows tenfold cannot
+# silently inflate every prompt (R1's gate is 200KB of corpus; a prompt budget is the
+# other half of that). Query length is NOT redefined here: rag_search.MAX_QUERY_CHARS is
+# the single ceiling, shared with the HTTP endpoint.
+MAX_KB_RESULTS = 5
+MAX_KB_SNIPPET_CHARS = 400
+MAX_KB_CONTEXT_CHARS = 3000
+
 ARTIFACT_NAME = re.compile(r"^[A-Za-z0-9_\u0600-\u06FF][A-Za-z0-9_.\u0600-\u06FF-]{0,63}$")
 
 
@@ -151,6 +174,114 @@ def _skill_brief(skill):
             "description": str(skill.get("description", ""))[:300],
             "category": skill.get("category"), "difficulty": skill.get("difficulty"),
             "steps": [str(step)[:200] for step in (skill.get("steps") or [])[:8]]}
+
+
+def _kb_search(ctx, args):
+    """Search the Waha knowledge base (R1's index, through R2's scorer).
+
+    Three rules, all structural rather than prompt-polite:
+
+    * **One scorer.** The only retrieval call in this file is `rag_search.search()`. No
+      BM25, no tokenizer, no `corpus.jsonl` reader lives in the agent, because a second
+      implementation would rank the same evidence differently from `GET /api/search`
+      and nobody would notice until answers got worse.
+    * **Citations are cargo, never prose.** `citation`/`chunk_id`/`skill_id`/`section`
+      are passed through verbatim from R2 (which took them from R1). A layer that
+      reformats a citation is a layer that can invent one.
+    * **Unavailable is not empty.** A missing or foreign-format index raises a
+      `ToolError`, so the task records an error and the model reads "the library is not
+      available here". Returning `results: []` instead would launder an infrastructure
+      failure into "we found nothing" — and R4's no-answer metric would score a lie.
+
+    There is no answer and no threshold here on purpose: R2 already refuses to decide
+    (`no_answer.decision: "deferred"`), so the evidence reaches the model with its own
+    confidence *described*, not judged. Trusting it is the model's job; measuring whether
+    to trust the retriever at all is R4's.
+    """
+    query = str(args.get("query", "")).strip()
+    if not query:
+        raise ToolError("اكتب سؤالاً للبحث في المكتبة.")
+    if len(query) > rag_search.MAX_QUERY_CHARS:
+        raise ToolError(f"السؤال أطول من {rag_search.MAX_QUERY_CHARS} حرفاً؛ اختصره.")
+    requested_k = args.get("k")
+    limit = MAX_KB_RESULTS
+    clamped = False
+    if requested_k not in (None, ""):
+        if isinstance(requested_k, bool):
+            raise ToolError("`k` عدد صحيح.")
+        try:
+            limit = int(requested_k)
+        except (TypeError, ValueError):
+            raise ToolError("`k` عدد صحيح.")
+        if limit < 1:
+            raise ToolError("`k` يجب أن يكون 1 على الأقل.")
+        if limit > MAX_KB_RESULTS:
+            clamped, limit = True, MAX_KB_RESULTS
+
+    try:
+        # ctx.rag_index_dir is injected from the app, so the agent and the HTTP endpoint
+        # read the same index — WAHA_RAG_DIR cannot fork the two paths apart.
+        payload = rag_search.search(query, k=limit, index_dir=getattr(ctx, "rag_index_dir", None))
+    except rag_search.RagSearchUnavailable as error:
+        raise ToolError(f"مكتبة المعرفة غير متاحة على هذا الخادم: {error}")
+
+    results, used, evidence_truncated = [], 0, False
+    for row in payload["results"]:
+        snippet = str(row.get("snippet", ""))
+        text = snippet[:MAX_KB_SNIPPET_CHARS]
+        # The budget counts characters that will actually reach the model, and at least
+        # one row always survives: an agent that got a hit must see it, even if the
+        # context ceiling means the rest of the page does not fit.
+        if results and used + len(text) > MAX_KB_CONTEXT_CHARS:
+            evidence_truncated = True
+            break
+        used += len(text)
+        results.append({
+            "title": row["title"],
+            "text": text,
+            "citation": row["citation"],          # verbatim from R1 via R2
+            "chunk_id": row["chunk_id"],
+            "skill_id": row["skill_id"],
+            "section": row["section"],
+            "score": row["score"],
+            # An inferred hit must not read like a direct one, so the qualifier travels
+            # with the row instead of being averaged away by a score.
+            "matched_directly": row["explain"]["matched_weight"] == 1.0,
+            "snippet_truncated": len(snippet) > MAX_KB_SNIPPET_CHARS,
+        })
+    stats = payload.get("query_stats") or {}
+    no_answer = payload.get("no_answer") or {}
+    out = {
+        "query": payload["query"],
+        "search_mode": payload["search_mode"],
+        # R2's label, kept so no downstream text can present browser-side filtering as
+        # retrieval; in the agent there is no fallback path at all.
+        "evidence": payload["evidence"],
+        "results": results,
+        "no_answer": {
+            "decision": no_answer.get("decision"),          # stays "deferred"
+            "result_count": no_answer.get("result_count"),
+            "max_score": no_answer.get("max_score"),
+        },
+        "coverage": stats.get("coverage", 0.0),
+        "inferred_terms": stats.get("inferred_terms", []),
+        "unmatched_terms": stats.get("unmatched_terms", []),
+        "corpus": {"content_status": payload["index"]["content_status"],
+                   "chunks": payload["index"]["chunks"]},
+    }
+    notes = []
+    if clamped:
+        out["requested_k"] = requested_k
+        notes.append(f"قُصّ `k` إلى سقف الأداة {MAX_KB_RESULTS}.")
+    if evidence_truncated:
+        out["evidence_truncated"] = True
+        notes.append(f"اقتُطعت بقية الأدلة عند حد السياق {MAX_KB_CONTEXT_CHARS} حرفاً.")
+    if out["results"] and not any(row["matched_directly"] for row in out["results"]):
+        notes.append("كل المطابقات مُستنتَجة لا حرفية؛ لا قدّمها كاقتباس مباشر من المصدر.")
+    if notes:
+        out["note"] = " ".join(notes)
+    out["evidence_chars"] = used
+    return out
 
 
 def _memory_write(ctx, args):
@@ -372,6 +503,15 @@ def build_registry():
              {"query": {"type": "string", "required": False, "description": "كلمة بحث"},
               "skill_id": {"type": "string", "required": False, "description": "معرّف مثل SKL002"}},
              _skill_lookup),
+        Tool("kb_search",
+             "ابحث في مكتبة المعرفة (فهرس Waha) عن مقاطع تعليمية مع استشهادها الحرفي؛ "
+             "للإجابة من المصدر لا من الذاكرة.",
+             {"query": {"type": "string", "required": True,
+                        "description": "سؤال طبيعي قصير، مثل: كيف أحدد جمهور الرسالة؟"},
+              "k": {"type": "number", "required": False,
+                    "description": f"عدد النتائج 1–{MAX_KB_RESULTS} (افتراضي {MAX_KB_RESULTS}) — "
+                                   "لا يُقبل أي فلتر أو إعادة ترتيب هنا"}},
+             _kb_search, requires_approval=False, read_only=True),
         Tool("memory_write", "احفظ ملاحظة قصيرة عن تفضيلات المتعلّم أو أهدافه لجلسات لاحقة.",
              {"content": {"type": "string", "required": True,
                           "description": "نص قصير حتى 400 حرف"},
