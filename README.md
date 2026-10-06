@@ -272,6 +272,16 @@ python -m http.server 8080 --directory docs    # http://localhost:8080 → مس�
    curl -sS --max-time 90 -i https://<service>.onrender.com/readyz   # 204 بلا جسم
    ```
 
+   يفحص السكربت: `/health` (بلا لمس قاعدة بيانات) و`/readyz` (يوقظ Neon ويثبت أن
+   `initialize()` بنى المخطط)، وCORS من أصل Pages مع رفض أي أصل أجنبي، ودورة هوية كاملة
+   (`register` ← `/api/me`)، و`/api/agent/config` حيث يجب أن تظهر **كتلة `execution`**
+   (الوضع + الميزانية + `new_knobs: 0`)، ومهمة حقيقية حتى حالة طرفية مع قراءة سجل الأحداث،
+   و**memory** كتابةً وقراءةً، و**artifact** المهمة قراءةً لمالكها، و`/api/search` أنه يُرجع
+   `RAG_LOCAL` باستشهاد حرفي وأن سؤالًا خارج الكتالوج يُرجع **0 نتيجة** بـ`deferred`. على
+   `inline` (Vercel) لا يُرجّ السكربت طابورًا: المهمة تنتهي داخل الطلب فيقرأ الحالة من سجل
+   الأحداث ويُكمل. `ai_enabled=false` فشلٌ **متوقّع** على خادم بلا `GEMINI_API_KEY`؛
+   و`SMOKE_TOKEN`/`SMOKE_CSRF` يعيدان استخدام زائر عند حدّ `register` (5/ساعة/IP).
+
    استخدم `--max-time 90` دائماً: أول طلب بعد خمول Render المجاني قد يستغرق
    ~50 ثانية. نجاح `/readyz` بـ204 يعني أن `initialize()` بنى الجداول على
    قاعدة Neon الفارغة.
