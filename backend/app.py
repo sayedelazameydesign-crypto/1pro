@@ -9,6 +9,7 @@ import sqlite3
 import time
 import uuid
 import socket
+import threading
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -97,7 +98,15 @@ except ImportError:  # Postgres support is optional; SQLite stays the default.
     dict_row = None
 
 
-def connect():
+# Importing a Vercel function must not open Neon or run a schema migration.
+# `connect()` is the only application gateway to a ready database; it calls the
+# lazy initializer defined below before returning a raw connection.
+_INITIALIZATION_LOCK = threading.Lock()
+_DATABASE_INITIALIZED = False
+
+
+def _open_connection():
+    """Open a database connection without performing schema initialization."""
     if POSTGRES:
         if psycopg is None:
             raise RuntimeError("DATABASE_URL is set but psycopg is not installed")
@@ -113,6 +122,12 @@ def connect():
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     return db
+
+
+def connect():
+    """Return a connection after lazily creating or migrating the schema."""
+    ensure_initialized()
+    return _open_connection()
 
 
 def run(db, sql, params=()):
@@ -292,26 +307,49 @@ def _migrate_postgres_provider_cooldown(db):
         db.execute("ALTER TABLE provider_cooldown ADD PRIMARY KEY(provider, user_id)")
 
 
-def initialize():
-    with connect() as db:
-        if POSTGRES:
-            for statement in PG_SCHEMA:
-                db.execute(statement)
-            _migrate_postgres_provider_cooldown(db)
+def initialize(*, force=True):
+    """Create or migrate the database schema without running at module import.
+
+    ``force=True`` preserves the old explicit-call behavior for administrative
+    migrations and tests. Normal request handling reaches this through
+    :func:`ensure_initialized`, which calls it once per Python process.
+    """
+    global _DATABASE_INITIALIZED
+    with _INITIALIZATION_LOCK:
+        if _DATABASE_INITIALIZED and not force:
             return
-        db.executescript(SQLITE_SCHEMA)
-        # Idempotent, serialized migrations: preserve all old conversations.
-        db.execute("BEGIN IMMEDIATE")
-        columns = {r[1] for r in db.execute("PRAGMA table_info(sessions)")}
-        if "provider" not in columns:
-            db.execute("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'")
-        columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
-        if "provider" not in columns:
-            db.execute("ALTER TABLE messages ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'")
-        _migrate_sqlite_provider_cooldown(db)
+        # Do not mark a transient Neon failure as successful: the next request
+        # must be able to retry initialization after the database wakes up.
+        _DATABASE_INITIALIZED = False
+        with _open_connection() as db:
+            if POSTGRES:
+                # A process-local lock protects threaded workers. This
+                # transaction-scoped PostgreSQL lock also serializes migrations
+                # across concurrent Vercel/Render processes sharing one Neon
+                # database, including primary-key upgrades below.
+                db.execute("SELECT pg_advisory_xact_lock(hashtext('waha-schema'))")
+                for statement in PG_SCHEMA:
+                    db.execute(statement)
+                _migrate_postgres_provider_cooldown(db)
+            else:
+                db.executescript(SQLITE_SCHEMA)
+                # Idempotent, serialized migrations: preserve all old conversations.
+                db.execute("BEGIN IMMEDIATE")
+                columns = {r[1] for r in db.execute("PRAGMA table_info(sessions)")}
+                if "provider" not in columns:
+                    db.execute("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'")
+                columns = {r[1] for r in db.execute("PRAGMA table_info(messages)")}
+                if "provider" not in columns:
+                    db.execute("ALTER TABLE messages ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'")
+                _migrate_sqlite_provider_cooldown(db)
+        _DATABASE_INITIALIZED = True
 
 
-initialize()
+def ensure_initialized():
+    """Lazily initialize the schema on the first database-using operation."""
+    if _DATABASE_INITIALIZED:
+        return
+    initialize(force=False)
 
 
 def fail(message, status=400, code="invalid_request"):
@@ -473,6 +511,8 @@ def health():
 
 @app.get("/readyz")
 def ready():
+    # Unlike /health, this deliberately invokes the lazy initializer and then
+    # proves the resulting database connection can execute a query.
     with connect() as db:
         db.execute("SELECT 1").fetchone()
     return "", 204

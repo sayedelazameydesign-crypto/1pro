@@ -15,8 +15,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Importing the app creates its data directory and a csrf secret sidecar; keep
-# both in a scratch directory regardless of which test module loads first.
+# Importing the app creates its data directory and csrf secret sidecar, but must
+# not open the database; keep filesystem side effects in a scratch directory.
 _scratch = tempfile.TemporaryDirectory()
 os.environ.setdefault("WAHA_DB", str(Path(_scratch.name) / "waha-vercel-test.db"))
 os.environ.setdefault("WAHA_ALLOWED_ORIGINS", "https://pages.test")

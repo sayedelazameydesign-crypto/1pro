@@ -3,6 +3,7 @@ import base64
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -57,6 +58,61 @@ class CatalogTests(unittest.TestCase):
     def test_empty_prompt_rejected(self):
         with self.assertRaises(ValueError):
             validate(dict(load_skills()[0], prompt=""), set())
+
+
+class LazyInitializationTests(unittest.TestCase):
+    def test_import_and_health_do_not_open_database_but_readyz_does(self):
+        """A Vercel import and shallow probe must survive a sleeping database."""
+        with tempfile.TemporaryDirectory() as scratch:
+            database = str(Path(scratch) / "lazy-test.db")
+            module_name = "waha_lazy_backend"
+            spec = importlib.util.spec_from_file_location(module_name, ROOT / "backend/app.py")
+            lazy_backend = importlib.util.module_from_spec(spec)
+            # Force the isolated import down the SQLite path even when the
+            # PostgreSQL CI job has DATABASE_URL in its outer environment.
+            with patch.dict(os.environ, {
+                "DATABASE_URL": "",
+                "WAHA_DB": database,
+                "WAHA_SECRET": "lazy-test-secret",
+                "WAHA_TRUST_PROMPTQL": "",
+                "WAHA_ALLOWED_ORIGINS": "https://pages.test",
+            }, clear=False), patch.object(
+                sqlite3, "connect", side_effect=AssertionError("database opened during import or /health")
+            ):
+                spec.loader.exec_module(lazy_backend)
+                response = lazy_backend.app.test_client().get("/health")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(lazy_backend._DATABASE_INITIALIZED)
+
+            # Once a deep check needs storage, it owns initialization and makes
+            # the schema available for the rest of the process.
+            self.assertEqual(lazy_backend.app.test_client().get("/readyz").status_code, 204)
+            self.assertTrue(lazy_backend._DATABASE_INITIALIZED)
+
+    def test_postgres_import_and_health_do_not_open_neon(self):
+        """The Vercel path must not connect merely because DATABASE_URL exists."""
+        import psycopg
+
+        with tempfile.TemporaryDirectory() as scratch:
+            database = str(Path(scratch) / "unused.db")
+            spec = importlib.util.spec_from_file_location("waha_lazy_postgres", ROOT / "backend/app.py")
+            lazy_backend = importlib.util.module_from_spec(spec)
+            with patch.dict(os.environ, {
+                "DATABASE_URL": "postgresql://will-not-be-opened.invalid/waha",
+                "WAHA_DB": database,
+                "WAHA_SECRET": "lazy-test-secret",
+                "WAHA_TRUST_PROMPTQL": "",
+                "WAHA_ALLOWED_ORIGINS": "https://pages.test",
+            }, clear=False), patch.object(
+                psycopg, "connect", side_effect=AssertionError("Neon opened during import or /health")
+            ):
+                spec.loader.exec_module(lazy_backend)
+                response = lazy_backend.app.test_client().get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["database"], "postgres")
+        self.assertFalse(lazy_backend._DATABASE_INITIALIZED)
 
 
 class BackendTests(unittest.TestCase):
