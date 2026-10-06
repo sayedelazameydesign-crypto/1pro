@@ -1,0 +1,95 @@
+{
+  "format": "waha.rag.v1",
+  "pipeline": {
+    "chunker": "block-greedy-overlap/1",
+    "tokenizer": "waha.word-ar-lite/1",
+    "stemmer": "waha.affix-lite/1",
+    "max_chars": 1600,
+    "min_chars": 120,
+    "overlap_ratio": 0.15,
+    "overlap_max_chars": 240,
+    "hard_split_floor": 0.6,
+    "max_stem_forms": 32
+  },
+  "content_status": "sample",
+  "source_of_truth": "skills/*/skill.json via build_catalog.load_skills",
+  "sections": [
+    {
+      "section": "description",
+      "field": "description",
+      "label": "الوصف"
+    },
+    {
+      "section": "prompt",
+      "field": "prompt",
+      "label": "الإرشاد التعليمي"
+    },
+    {
+      "section": "starter",
+      "field": "starter",
+      "label": "مثال بداية"
+    }
+  ],
+  "metadata_as_keywords": [
+    "name",
+    "category",
+    "difficulty",
+    "tags"
+  ],
+  "gate_thresholds": {
+    "corpus_bytes": 200000,
+    "skill_count": 50,
+    "pdf_count": 1,
+    "lexical_recall_at5": 0.8
+  },
+  "inputs": [
+    {
+      "path": "skills/SKL001/skill.json",
+      "bytes": 780,
+      "sha256": "sha256:7222ab48b69f593cbe1b9d66903b38dcc48a96b638c7d8577ce0a0e5d3531f5b"
+    },
+    {
+      "path": "skills/SKL002/skill.json",
+      "bytes": 706,
+      "sha256": "sha256:77898ac61e756ec5bd1890c9d9c7307c73aef76daeb8999674ab27f69ce266d3"
+    },
+    {
+      "path": "skills/SKL003/skill.json",
+      "bytes": 790,
+      "sha256": "sha256:49ed86a64aa63ad86e17ceb887c70f320b91fa99f2e8dde4703e6a9a3fe80978"
+    },
+    {
+      "path": "skills/SKL004/skill.json",
+      "bytes": 787,
+      "sha256": "sha256:34fea36353485fdf232574d26fc5585eae74dd2f09c8671ec2188f507a4f9ded"
+    },
+    {
+      "path": "skills/SKL005/skill.json",
+      "bytes": 750,
+      "sha256": "sha256:4a6e7be0aa2e0fe2c8e7b5878494bef39b0b3959e3937b89e22a96f65f92ff10"
+    },
+    {
+      "path": "skills/SKL006/skill.json",
+      "bytes": 774,
+      "sha256": "sha256:906bad21acf30b00168e167ad8cd5e5f7d8e09ea24ae4fa38d19267427a41614"
+    }
+  ],
+  "counts": {
+    "skills": 6,
+    "chunks": 18
+  },
+  "artifacts": {
+    "corpus.jsonl": {
+      "bytes": 15742,
+      "sha256": "sha256:7f4ff8502681d0766213895b1d2932f72a188e3ce3c0b7748608bac6ae61239c"
+    },
+    "index.json": {
+      "bytes": 20251,
+      "sha256": "sha256:d0c98bc7139790fba8dcf6745b3f2298906d40a0f585f3ee9bcf069454df025f"
+    },
+    "stats.json": {
+      "bytes": 2310,
+      "sha256": "sha256:b9b899af9f7bfad5e6920e271f11cb37af1f80a32c77604dbb5ec7cacac524c2"
+    }
+  }
+}

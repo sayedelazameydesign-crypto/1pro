@@ -10,7 +10,10 @@ services:
     region: ohio
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 90
+    # --threads 8: the agent page holds an event stream (SSE) open per viewer.
+    # With one sync worker and no threads, that stream would block every other
+    # request on the free instance.
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 90
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
@@ -23,3 +26,11 @@ services:
         generateValue: true
       - key: WAHA_ALLOWED_ORIGINS
         value: https://sayedelazameydesign-crypto.github.io
+      # Agent layer (backend/agent/*). Defaults are tuned for the free instance:
+      # one worker thread, a short loop, and no outbound fetch unless opted in.
+      - key: AGENT_NETWORK_TOOLS
+        value: "0"
+      - key: AGENT_MAX_STEPS
+        value: "5"
+      - key: AGENT_TASK_DEADLINE_SECONDS
+        value: "180"

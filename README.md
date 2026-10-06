@@ -3,15 +3,18 @@
 قالب جاهز للرفع إلى المستودع المقترح:
 https://github.com/sayedelazameydesign-crypto/1pro
 
-**الحالة:** الكود مُجهّز ومُختبر محلياً ومرفوع إلى هذا المستودع. حالة CI الفعلية تُعرض في Actions؛ Pages وDiscussions لم تُفعّلا ضمن هذا الرفع.
-لا تحتاج إنشاء مستودع آخر؛ يمكن استخدام `1pro` الموجود.
+**الحالة:** الكود على `main` مُجهّز ومُختبر محلياً ومرفوع. الكتالوج منشور على Pages ويعمل؛
+أُعلن الإصدار `v0.1.0`. ما زال مؤجَّلاً: إعادة نشر Pages (النشرة الحيّة متأخرة بنشرة عن
+آخر `main`)، تفعيل Discussions، ونشر الخادم العام (يتطلب حسابات المالك). حالة CI الفعلية
+تُعرض في Actions. لا تحتاج إنشاء مستودع آخر؛ يمكن استخدام `1pro` الموجود.
 
 ## نسختان واضحتان
 
 | النسخة | ما يعمل | ما لا يعمل |
 |---|---|---|
-| `docs/` · GitHub Pages | واجهة عربية RTL، ألوان هادئة، dark mode، بحث وفلاتر، تنزيل 6 مهارات JSON | لا Python، لا SQLite، لا تسجيل حساب، لا حفظ محادثات، لا AI |
+| `docs/` · GitHub Pages | واجهة عربية RTL، ألوان هادئة، dark mode، بحث وفلاتر، تنزيل 6 مهارات JSON؛ ومساحة عمل الوكيل تُقرأ فقط عند ضبط `api_base` | لا Python، لا SQLite، لا تسجيل حساب، لا حفظ محادثات، لا AI — ما لم تُربط بخادم |
 | `backend/` · تطبيق الخادم | مكتبة خاصة، شرح/تمارين/اختبارات عبر Gemini، حفظ المحادثات وتصديرها وحذفها | يعمل في وضعين: خلف بوابة PromptQL، أو وضع مستقل (انظر «النشر المستقل») |
+| `backend/agent/` · طبقة الوكيل | خطة متعددة الخطوات، أدوات بموافقة، حالة مهمة محفوظة، بث أحداث SSE، لوحة مخرجات (artifacts)، ذاكرة متعلّم | لا تشغيل كود، لا متصفح، لا ملفات مستخدم، لا مهام تتجاوز عمر الطلب/الخطة المجانية |
 
 **Pages تستضيف ملفات ثابتة فقط.** ربطها بخادم خارجي يتطلب نظام دخول
 وتحقق من الهوية وسياسة CORS وحماية الأسرار وإعداد موفّر AI منفصل.
@@ -28,6 +31,7 @@ https://github.com/sayedelazameydesign-crypto/1pro
 
 ```text
 backend/             تطبيق Flask الحالي وملف إعداد غير سري
+backend/agent/       طبقة الوكيل: providers · tools · store · runtime · service
 docs/                الواجهة الثابتة التي يمكن نشرها على Pages
 skills/<ID>/         المصدر الأساسي للمهارات الست
 scripts/             تحقق وبناء فهرس ثابت + smoke للخادم المستقل
@@ -52,6 +56,12 @@ python -m http.server 8080 --directory docs
 ## الاختبارات
 
 ```bash
+python scripts/rag_index.py --check      # artifacts R1 مطابقة للبايت لما في المستودع
+python scripts/rag_eval.py --check       # قياس R4 مطابقة، والبوابة تقرأ نفس الرقم
+```
+
+
+```bash
 python -m venv .venv
 # Linux / macOS:
 . .venv/bin/activate
@@ -60,9 +70,13 @@ python -m pip install -r backend/requirements.txt
 python scripts/build_catalog.py --check
 python -m unittest discover -s tests -v
 node --check docs/assets/app.js
+python scripts/deploy_doctor.py --self-test
+python scripts/deploy_doctor.py --target render   # يفحص بيئة النشر عندك، بلا شبكة ولا طباعة مفاتيح
 ```
 
-اختبارات CI تستخدم هوية وAI مُحاكيين داخل عميل اختبار، وتعمل كاملةً على
+اختبارات طبقة الوكيل تشغّل الحلقة كاملة على `FakeProvider` (بلا شبكة): خطة، أداة،
+موافقة/رفض، إلغاء، artifacts، ذاكرة، حدود الساعة المشتركة مع المحادثة، وتنعزل
+الملفات بين الزوّار. اختبارات CI تستخدم هوية وAI مُحاكيين داخل عميل اختبار، وتعمل كاملةً على
 قاعدتين مؤقتتين: SQLite وPostgreSQL 16. يمر اختبار NVIDIA cooldown في
 وظيفة PostgreSQL لتغطية صيغة upsert الحقيقية. الرد الفعلي لـGemini اختُبر
 في تطبيق PromptQL، لكنه ليس جزءاً من CI. الفحص البنيوي لا يثبت صحة المحتوى
@@ -100,6 +114,113 @@ git push -u origin main
 
 لا ملف CNAME قبل اختيار نطاق وتهيئة DNS.
 
+## طبقة الاسترجاع · R2 (بحث معجمي فوق فهرس Waha)
+
+`backend/rag_search.py` يقرأ `data/rag/` كما هو — لا مخطط موازٍ، لا إعادة توليد، لا
+استدعاء شبكة ولا قاعدة بيانات في مسار البحث. BM25 فوق `postings` المودَعة، بوزن للقسم
+داخل التراكم (`prompt` 1.15، `description` 1.0، `starter` 0.55 — القيم الثلاث في
+`rag_search.SECTION_WEIGHTS`، وأي رقم في هذا الملف يخالفها يفشله `tests/test_docs_match_code.py`)
+وعبارات إيقافية تُطبَّق
+على الاستعلام وحده. قواعد الطيّ نفسها في `backend/rag_text.py` يستوردها R1 وR2 معًا، لأن
+نسخة ثانية من المجزّئ كانت ستختلف عن `postings` بصمت.
+
+| المسار | الوظيفة |
+|---|---|
+| `GET /api/search?q=&k=&section=&skill=` | نتائج مرتبة فوق فهرس R1: `citation` و`chunk_id` حرفيان من المقطع، مع `score` و`explain` و`coverage`. `k` حتى 20 (الأكثر يُقصّ لا يُرفض). **لا عتبة قرار**: `no_answer.decision` إما `deferred` أو `unsearchable`، ومن يملك العتبة هو `data/rag/eval-report.json` في R4 |
+
+**R3**: `kb_search` داخل حلقة الوكيل هي نفس الدالة — للقراءة فقط، بلا موافقة، بسقف 5
+نتائج و`MAX_KB_CONTEXT_CHARS=3000` حرف من الأدلة لكل لفّة، ومع `citation` مُمرَّرًا حرفيًا.
+فهرس مفقود هناك يُبلَّغ `ToolError` («المكتبة غير متاحة») لا «لا نتائج»، حتى لا يُلغَس عطل
+بنية تحتية في مقياس `no-answer-rate`.
+
+بلا فهرس → `503 rag_index_missing` مع السبب في `/health.rag.reason`. والواجهة
+(`docs/assets/search.js`) تسمّي مصدرها دائمًا: `RAG_LOCAL` من الخادم، أو
+`BROWSER_FALLBACK` عند انقطاعه أو انتهاء المهلة (2.5 ثانية) فتعرض التصفية المحلية
+موسومةً صراحة بأنها **ليست استرجاع RAG** وبلا قائمة «نتائج»، أو `NONE` بلا `api_base`.
+لا يُمزج المساران في قائمة واحدة، ولا يُرسَل الكتالوج إلى المتصفح.
+
+**R4 (التقييم):** `python scripts/rag_eval.py` يقيس المسترجِع نفسه عبر 22 حالة في
+`eval/train.json` ويكتب `data/rag/eval-report.json` — وهو **الكاتب الوحيد** له. الوضع
+المُراجَع `--check` يعيد الحساب ويقارن البايتات ويفشل CI عند الانحراف أو عند `false-answer > 0`،
+وهو المصدر الوحيد لبوابة المتجهات في `stats.json`. القياس الحالي:
+`recall@5 = 0.9375` · `precision@1 = 0.9375` · `no-answer = 1.0` · `citations = 1.0`
+· `dupes = 0.0` ← **المتجهات ما زالت غير مبرَّرة**. الفجوتان المعروفتان (التعريب
+`بايثون`≠`python`، والاستعلام بلفظ اسم المهارة) تبقيان في الاختبار عمداً.
+
+## طبقة الوكيل · Agent Runtime
+
+`backend/agent/` تحوّل المحادثة أحادية الرد إلى حلقة: **افهم → خطّط → نفّذ → راقب →
+راجع → أبلغ**، بحالة محفوظة في القاعدة لا في ذاكرة العملية. القرارات والمرفوضات في
+`ARCHITECTURE.md`.
+
+| المسار | الوظيفة |
+|---|---|
+| `GET /api/agent/config` | enabled/model/tools/limits (بلا أسرار، `guaranteed_capacity:false`) |
+| `POST /api/agent/tasks` | `{goal, provider?}` → مهمة؛ `agent_busy` إن كانت لديك مهمة نشطة |
+| `GET /api/agent/tasks[/<id>]` | قائمة المهام أو مهمة واحدة: خطة، خطوات، أدوات، artifacts، usage |
+| `GET /api/agent/tasks/<id>/events?cursor=` | سجل الأحداث (المصدر الصادق للحالة) |
+| `GET /api/agent/tasks/<id>/stream` | نفس الأحداث بصيغة SSE؛ يستلزم `--threads` في gunicorn |
+| `POST /api/agent/tasks/<id>/approve` | `{call_id, approve}` — بلا موافقة لا يُنفَّذ شيء |
+| `POST /api/agent/tasks/<id>/cancel\|delete` | إلغاء تعاوني أو حذف مع الخطوات والأحداث |
+| `GET /api/agent/artifacts/<id>` | ملف من لوحة العرض (html/css/js/json/markdown) |
+| `GET/POST /api/agent/memory` · `…/<id>/delete` | ملاحظات المتعلّم التي تُقرأ كسياق فقط |
+
+**الأدوات المبنية:** `calculator` (تعبير رقمي بحارس AST)، `clock`، `skill_lookup`، `kb_search`،
+`memory_write`، `artifact_write`، و`web_fetch` (GET مع حارس SSRF، معطّل افتراضياً
+ويحتاج موافقة). **المرفوض عمداً:** تشغيل كود، shell، كتابة ملفات، متصفح، ومهام
+تتجاوز عمر الطلب — الخطة المجانية لا تعطي sandbox، فلا نعد بما لا نأمن عليه.
+
+| متغير | الافتراضي | ملاحظات |
+|---|---|---|
+| `AGENT_MAX_STEPS` | 5 | 1–10؛ كل خطوة استدعاء نموذج على الأقل |
+| `AGENT_MAX_TOOL_CALLS` | 8 | سقف أدوات المهمة الواحدة |
+| `AGENT_MAX_AI_CALLS` | 8 | لا يتجاوز حدود الساعة المشتركة مع المحادثة |
+| `AGENT_TASK_DEADLINE_SECONDS` | 180 | 30–420؛ Render free بلا workers فلا استئناف بعد النوم |
+| `AGENT_WORKERS` | 1 | خيط عمل واحد: 0.1 CPU وموديل مشترك |
+| `AGENT_APPROVAL_TIMEOUT_SECONDS` | 600 | انتهائها يُلغي الطلب، لا ينفّذه |
+| `AGENT_NETWORK_TOOLS` | 0 | 1 يفتح `web_fetch` (يبقى approval-first) |
+| `AGENT_AUTO_APPROVE_READ_ONLY` | 0 | لا يشمل أبداً أدوات الشبكة |
+| `AGENT_MEMORY_MAX_ITEMS` | 40 | ذاكرة لكل زائر، تُقرأ آخر 8 كسياق |
+| `AGENT_MODEL` | من `runtime-config.json` | تجاوز نموذج الوكيل وحده |
+| `AGENT_FAKE` | 0 | `1` بلا `GEMINI_API_KEY`: ردود ثابتة لتجربة الواجهة والـsmoke، لا نموذج ولا شبكة |
+
+### وضع التنفيذ (R6): نفس الوكيل، جدولتان
+
+`backend/agent/execution.py` هو المكان الوحيد الذي يترجم شكل النشر إلى قرار:
+
+```text
+app.py  ->  execution_policy()  ->  ExecutionMode  ->  Service(mode=...)  ->  Agent.run()
+                                                        ├── queued  (Render: عامل في الخلفية)
+                                                        └── inline  (Vercel / PromptQL: داخل الطلب)
+```
+
+الوكيل نفسه **لا يعرف أن Vercel موجود**: لا `os.environ` في `backend/agent/` سوى طبقة
+الأعداد (باسم `AGENT_*` فقط)، ولا مقارنة باسم مضيف في أي موضع — يفحص ذلك
+`tests/test_agent_no_platform_branching.py` على AST. الفارق المسموح الوحيد هو **الميزانية
+والجدولة**: `inline` يُلغي سقفًا على `AGENT_MAX_STEPS`/`AGENT_MAX_AI_CALLS`/
+`AGENT_TASK_DEADLINE_SECONDS`/`AGENT_PROVIDER_TIMEOUT_SECONDS` بـ`min()` (الأقل يفوز، لذا
+`AGENT_MAX_STEPS=1` لا يُعاقَب)، ويرفض الأدوات التي تحتاج موافقة، ولا يقبل مهمة في الطابور.
+**لم تُضف أي متغيرات `AGENT_SERVERLESS_*`**: العقد الحالي يعبّر عن الوضع بالحدود الموجودة.
+
+الدليل `tests/test_agent_execution.py`: نفس نص السيناريو المُشغَّل على `FakeProvider` يمر
+بالمسارين، والخطة والخطوات ونتائج الأدوات والحالة والأحداث والتقرير **متطابقة حقلًا حقلًا**
+(يُستثنى الزمن ومعرّفات الصفوف). ومهمّة تتجاوز الميزانية تُنهى `failed` برمز خطأ واضح في
+الوضعين، و`429` يفشل بلا تحويل إلى مزوّد آخر، و`submit()` على مضيف Serverless يرفض بدل أن
+يُنتج دوّارًا لا ينتهي أبدًا.
+
+### جرّبها محلياً بلا مفاتيح
+
+```bash
+cd backend
+AGENT_FAKE=1 AGENT_NETWORK_TOOLS=1 WAHA_DB=/tmp/waha.db python app.py    # http://127.0.0.1:5210
+# نافذة أخرى: تجرّب الـAPI والمساحة معاً
+scripts/smoke.sh http://127.0.0.1:5210
+# أو الواجهة الكاملة: ضع "api_base": "http://127.0.0.1:5210" في docs/data/config.json ثم
+python -m http.server 8080 --directory docs    # http://localhost:8080 → مساحة العمل
+```
+
+`api_base` المحلي للتجربة فقط؛ لا ترفعه إلى المستودع لأن Pages تُخدم من أصل آخر.
+
 ## النشر المستقل — Render + Neon + Gemini
 
 خيار النشر المجاني بدون بطاقة (تحقق من الأسعار قبل الاعتماد عليها؛
@@ -124,10 +245,13 @@ git push -u origin main
 | `WAHA_SECRET` | **لا تضبطه يدويًا عند استخدام Blueprint** | `render.yaml` يعلن `generateValue: true` فيولّده Render مرة واحدة ويثبّته عبر النشرات؛ إدخاله يدويًا يتجاوز المولَّد أو يتعارض معه. خارجه (تشغيل محلي) يُنشأ ملف جانبي مؤقت يضيع مع كل نشر فتُبطَل جلسات الزوار |
 | `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
+| `WAHA_RAG_DIR` | اختياري (`<repo>/data/rag`) | دليل فهرس R1 الذي يقرأه `GET /api/search`. يُضبط في اختبار أو نسخة بديلة فقط؛ مساره الخاطئ يرجع `503 rag_index_missing` ولا يُبدَّل بنتائج مُختَرَعة |
+| `AGENT_*` | اختياري | ميزانيات طبقة الوكيل وحدودها؛ الجدول الكامل في «طبقة الوكيل». قبل النشر شغّل `python scripts/deploy_doctor.py --target render` |
 | `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | **وضع PromptQL فقط — لا تضبط أياً منهما في النشر المستقل** | ⚠️ مع `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة `X-PromptQL-Visitor-Token` **بدون تحقق توقيع** (يُفحص `exp` و`sub` فقط، دالة `identity` في `backend/app.py`)، فأي زائر يستطيع تزوير الهوية وتجاوز cooldown/الحدود. كذلك `PROMPTQL_PLATFORM_API_URL` وحده يحوّل مسار AI إلى البوابة ويُلغي مسار `GEMINI_API_KEY`. في النشر المستقل: اترك المتغيرين غير مضبوطين |
 
-أمر البدء: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 90`
-(المهلة 90 ثانية لأن طلب Gemini الواحد قد يستغرق حتى 75 ثانية).
+أمر البدء: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 90`
+(المهلة 90 ثانية لأن طلب Gemini الواحد قد يستغرق حتى 75 ثانية، والخيوط لأن مساحة العمل
+تفتح بث أحداث SSE؛ عامل sync واحد بلا خيوط يحبس بقية الطلبات خلفه).
 
 ### خطوات مختصرة (بهذا الترتيب)
 
@@ -139,6 +263,7 @@ git push -u origin main
 3. **Smoke للخادم**:
 
    ```bash
+   python scripts/deploy_doctor.py --env-file service.env --target render   # قبل النشر
    scripts/smoke.sh https://<service>.onrender.com
    curl -sS --max-time 90 https://<service>.onrender.com/health
    curl -sS --max-time 90 -i https://<service>.onrender.com/readyz   # 204 بلا جسم
@@ -161,7 +286,8 @@ git push -u origin main
 
 - `/health` **لا يلمس قاعدة البيانات عمداً** حتى لا يوقظ Neon كل بضع
   دقائق ويحرق ساعات الحوسبة المجانية؛ استخدمه لفحص الصحة، واستخدم
-  `/readyz` للفحص العميق عند الحاجة فقط.
+  `/readyz` للفحص العميق عند الحاجة فقط. و`/api/search` مثله: يقرأ ملفًا مودَعًا
+  في المستودع، فلا يوقظ Neon ولا يمسّ رصيد ساعة الحوسبة.
 - أول طلب بعد الخمول بطيء (استيقاظ Render ثم استيقاظ Neon). إن أردت
   تقليل ذلك، وجّه ping خارجياً (مثل UptimeRobot) إلى `/health` كل
   10–14 دقيقة — وليس إلى `/readyz`.
@@ -182,6 +308,12 @@ git push -u origin main
 للنشر. انتبه إلى أن Hobby مشروطة بالاستخدام الشخصي غير التجاري في شروط
 Vercel؛ المشروع التجاري يتطلب Pro.
 
+- **مهام الوكيل تُنفَّذ داخل الطلب**: لا شيء يستمر بعد إرسال الرد على Serverless، لذلك
+  يفرض `VERCEL=1` وضع `mode: inline` بسقف خطوة واحدة و45 ثانية و3 استدعاءات نموذج
+  (تُرفض الأدوات التي تحتاج موافقة). الأرقام ليست في `app.py` بل في
+  `SERVERLESS_CAPS` داخل `backend/agent/execution.py`، و`DEADLINE_SECONDS` (45) أقل من
+  `maxDuration` (60) عمداً — تختبر ذلك `test_serverless_budget_fits_vercels_declared_ceiling`.
+  المهام الأطول تحتاج Render؛ لا متغير `AGENT_SERVERLESS_*`.
 - **`maxDuration: 60`**: هذا السقف مضمون على Hobby. القيمة 300 لا تُقبل إلا
   حيث يكون Fluid Compute مفعلاً، وقد تُرفض في المشاريع الأقدم.
 - **لا تجمع `builds` مع `functions`** في `vercel.json`: الاثنان متعارضان
@@ -239,9 +371,18 @@ python app.py
       محوّل Postgres (مع بقاء SQLite للتشغيل المحلي والاختبارات)، اتصال
       مباشر بـ Gemini عبر `GEMINI_API_KEY`، وواجهة `docs/` قابلة للربط
       بعنوان الخادم عبر `docs/data/config.json`.
+- [x] طبقة الوكيل: حلقة plan/act/observe/reflect/report مع حالة محفوظة، موافقات،
+      artifacts، ذاكرة، SSE، ومحوّل Provider لا يعرف Flask ولا مزوّداً بعينه.
+- [x] `scripts/deploy_doctor.py`: فحص بيئة النشر بلا شبكة وبلا طباعة مفاتيح (+self-test في CI).
+- [x] إعلان الإصدار `v0.1.0` على `main`.
+- [ ] إعادة نشر Pages بنشرة واحدة (آخر نشر سابق على `docs/assets/app.js` و`config.json`
+      الحاليَّين): Actions → «Publish static skill catalog to Pages» → Run workflow.
 - [ ] إنشاء حسابات Render/Neon ومفاتيح الخدمة ونشر الخادم فعلياً (يتطلب
-      حسابات المالك؛ الكود و`render.yaml` جاهزان).
-- [ ] تفعيل Discussions، إنشاء Releases، أو إعداد نطاق مخصص.
+      حسابات المالك؛ الكود و`render.yaml` جاهزان) ثم ضبط `api_base`.
+- [ ] تفعيل Discussions أو إعداد نطاق مخصص.
+- [ ] اختيار ترخيص للكود قبل أي إعادة استخدام عامة.
+- [ ] Streaming للمحادثة نفسها، أدوات أكثر، ومهام أطول من عمر الطلب — كلها تحتاج
+      طبقة تنفيذ خارج الخطة المجانية (انظر خارطة الطريق في `ARCHITECTURE.md`).
 
 لا توجد مزامنة حية مع GitHub داخل التطبيق الحالي؛ مكتبة المهارات هنا
 تُبنى من الملفات المثبتة في الإصدار. يمكن إضافة مزامنة مُراجعة لاحقاً.

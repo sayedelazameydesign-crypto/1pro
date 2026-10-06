@@ -19,6 +19,10 @@ temp = tempfile.TemporaryDirectory()
 os.environ["WAHA_DB"] = str(Path(temp.name) / "waha-test.db")
 os.environ["WAHA_TRUST_PROMPTQL"] = "1"
 os.environ["WAHA_ALLOWED_ORIGINS"] = "https://pages.test"
+# Deterministic isolation: the "no keys" tests must stay true even when another
+# test module (or the developer's shell) exported AI credentials.
+for _key in ("GEMINI_API_KEY", "PROMPTQL_PLATFORM_API_URL", "WAHA_MODEL", "AGENT_MODEL"):
+    os.environ.pop(_key, None)
 spec = importlib.util.spec_from_file_location("waha_backend", ROOT / "backend/app.py")
 backend = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backend)

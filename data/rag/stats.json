@@ -1,0 +1,110 @@
+{
+  "format": "waha.rag.v1",
+  "pipeline": {
+    "chunker": "block-greedy-overlap/1",
+    "tokenizer": "waha.word-ar-lite/1",
+    "stemmer": "waha.affix-lite/1",
+    "max_chars": 1600,
+    "min_chars": 120,
+    "overlap_ratio": 0.15,
+    "overlap_max_chars": 240,
+    "hard_split_floor": 0.6,
+    "max_stem_forms": 32
+  },
+  "content_status": "sample",
+  "counts": {
+    "skills": 6,
+    "sections": 18,
+    "chunks": 18,
+    "indexed_chunks": 18,
+    "duplicate_chunks": 0,
+    "unique_chunks": 18,
+    "corpus_chars": 1592,
+    "corpus_bytes": 2882,
+    "tail_merged": 0,
+    "tokens": 242,
+    "vocab": 196,
+    "postings": 240,
+    "stem_expansions": 95
+  },
+  "chunk_chars": {
+    "min": 46,
+    "p50": 63,
+    "p95": 155,
+    "max": 157,
+    "mean": 88.4
+  },
+  "chunk_tokens": {
+    "min": 6,
+    "p50": 10,
+    "p95": 23,
+    "max": 23,
+    "mean": 13.4
+  },
+  "per_doc": {
+    "SKL001": {
+      "title": "كتابة المحتوى",
+      "chunks": 3,
+      "chars": 276,
+      "tokens": 40,
+      "sections": 3
+    },
+    "SKL002": {
+      "title": "أساسيات Python",
+      "chunks": 3,
+      "chars": 245,
+      "tokens": 36,
+      "sections": 3
+    },
+    "SKL003": {
+      "title": "إدارة الوقت",
+      "chunks": 3,
+      "chars": 282,
+      "tokens": 45,
+      "sections": 3
+    },
+    "SKL004": {
+      "title": "تصميم تجربة المستخدم",
+      "chunks": 3,
+      "chars": 269,
+      "tokens": 40,
+      "sections": 3
+    },
+    "SKL005": {
+      "title": "كتابة البريد المهني",
+      "chunks": 3,
+      "chars": 253,
+      "tokens": 42,
+      "sections": 3
+    },
+    "SKL006": {
+      "title": "تحليل البيانات",
+      "chunks": 3,
+      "chars": 267,
+      "tokens": 39,
+      "sections": 3
+    }
+  },
+  "warnings": {
+    "unindexed_prose": [],
+    "tail_merges": 0
+  },
+  "vector_gate": {
+    "vector_enabled": false,
+    "reasons": [],
+    "decision": "lexical-only",
+    "measured": {
+      "corpus_bytes": 2882,
+      "skill_count": 6,
+      "pdf_count": 0,
+      "lexical_recall_at5": 0.9375
+    },
+    "thresholds": {
+      "corpus_bytes": 200000,
+      "skill_count": 50,
+      "pdf_count": 1,
+      "lexical_recall_at5": 0.8
+    },
+    "note": "embeddings stay off until a threshold trips; R4 writes eval-report.json"
+  }
+}

@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import time
 import uuid
 import socket
@@ -17,6 +18,27 @@ from urllib.parse import urlsplit
 from flask import Flask, g, jsonify, request, send_file
 
 ROOT = Path(__file__).resolve().parent
+# R1 writes the retrieval index at repo root; a deployment that ships only this
+# directory can point WAHA_RAG_DIR at a copy. First existing candidate wins, and a
+# missing index is a 503 -- never an empty "success".
+_RAG_CANDIDATES = (ROOT.parent / "data/rag", ROOT / "data/rag")
+RAG_INDEX_DIR = (Path(os.environ["WAHA_RAG_DIR"]) if os.environ.get("WAHA_RAG_DIR")
+                 else next((path for path in _RAG_CANDIDATES
+                            if (path / "index.json").exists()), _RAG_CANDIDATES[0]))
+# The agent package lives next to this module. Under `gunicorn app:app`,
+# `python app.py`, the Vercel wrapper and the test-suite the working directory
+# differs, so make the import independent of it.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agent.config import AgentConfig            # noqa: E402
+from agent.providers import GeminiProvider, GatewayProvider  # noqa: E402
+from agent.service import Service               # noqa: E402
+from agent import execution as agent_execution      # noqa: E402
+from agent.store import Store                   # noqa: E402
+import rag_search                          # noqa: E402  (R2: lexical search over data/rag)
+from agent.runtime import Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
+from agent.tools import build_registry          # noqa: E402
 
 # --- Deployment configuration -------------------------------------------------
 # Standalone mode (e.g. Render): set DATABASE_URL, GEMINI_API_KEY, WAHA_SECRET,
@@ -311,11 +333,51 @@ def initialize():
         _migrate_sqlite_provider_cooldown(db)
 
 
-initialize()
+# --- Agent runtime wiring -----------------------------------------------------
+# The core (`backend/agent/`) is engine- and vendor-agnostic; this adapter is
+# the only glue, so the agent reuses the exact SQLite/Postgres quirks the chat
+# path already proved out (placeholder translation, RETURNING ids, pooling).
+class AgentDB:
+    @property
+    def postgres(self):
+        return POSTGRES
+
+    @staticmethod
+    def connect():
+        return connect()
+
+    @staticmethod
+    def run(db, sql, params=()):
+        return run(db, sql, params)
+
+    @staticmethod
+    def insert_returning_id(db, sql, params=()):
+        return insert_returning_id(db, sql, params)
 
 
-def fail(message, status=400, code="invalid_request"):
-    return jsonify(error=message, code=code), status
+agent_store = Store(AgentDB())
+agent_tools = build_registry()
+
+
+# Local/demo mode only: `AGENT_FAKE=1` with no real credentials lets the UI (and
+# `scripts/smoke.sh`) walk the whole agent flow without a Gemini key or any
+# outbound call. Answers are canned and labelled as a demo, and the flag never
+# enables the chat path or the NVIDIA path.
+AGENT_FAKE = os.environ.get("AGENT_FAKE", "") == "1" and not GEMINI_API_KEY and not PROMPTQL_API_URL
+
+FAKE_SCRIPT = [
+    {"steps": [{"title": "احسب متوسط الأرقام", "goal": "اجمع الأرقام ثم اقسمها على عددها"},
+               {"title": "اكتب الخلاصة", "goal": "لخّص النتيجة في سطرين"}]},
+    {"thought": "أحتاج عملية حسابية", "action": {"tool": "calculator",
+                                                "args": {"expression": "(12+18+24)/3"}}, "final": None},
+    {"thought": "وصلت للنتيجة", "action": None, "final": "المتوسط يساوي 18"},
+    {"thought": "أعرض الملف في اللوحة", "action": {"tool": "artifact_write", "args": {
+        "name": "summary.md", "kind": "markdown",
+        "content": "# خلاصة\n\nالمتوسط = 18 (من 12 و18 و24).\n"}}, "final": None},
+    {"thought": "انتهى", "action": None, "final": "حُسب المتوسط ونُشر ملف الخلاصة في اللوحة."},
+    "أنجزت الواحة خطوتين: حساب المتوسط ثم نشر الخلاصة. النتيجة 18. "
+    "هذه إجابة تجريبية من وضع العرض (AGENT_FAKE=1)، وليست من نموذج حقيقي.",
+]
 
 
 def ai_mode():
@@ -330,6 +392,143 @@ def ai_mode():
     if GEMINI_API_KEY:
         return "gemini"
     return "disabled"
+
+
+def agent_available():
+    return AGENT_FAKE or ai_mode() != "disabled"
+
+
+def execution_policy():
+    """R6: the only place in the backend that turns a platform fact into a rule.
+
+    `VERCEL` is a *deployment* fact, so it is read here and nowhere else: not in the
+    runtime, not in the provider, not in the tool registry. The agent core receives a
+    resolved policy (a mode, a capped config, two booleans) and stays one implementation
+    for Render, Vercel and PromptQL. `tests/test_agent_no_platform_branching.py` fails if
+    a host name ever appears in `backend/agent/` again -- that is how an "exception for one
+    platform" turns into two products, and it is cheap to prevent and expensive to notice.
+
+    Resolved per call on purpose: the value is a property of the request path, and a test
+    (or a reconfigured cold start) must not need to re-import this module to change it.
+    """
+    return agent_execution.resolve(ai_mode=ai_mode(),
+                                   serverless=bool(os.environ.get("VERCEL")),
+                                   config=AgentConfig)
+
+
+def agent_forces_inline():
+    """True when the loop runs inside the request instead of a queue (see above)."""
+    return execution_policy().is_inline
+
+
+def agent_state():
+    """Public label of the agent AI path (never a credential)."""
+    if AGENT_FAKE:
+        return "demo"
+    return ai_mode()
+
+
+def agent_provider(task=None, visitor_token=None, timeout=None):
+    """The provider for every step of a task. Chosen once, never switched."""
+    if AGENT_FAKE:
+        from agent.providers import FakeProvider
+        return FakeProvider(model="waha-demo", script=list(FAKE_SCRIPT))
+    mode = ai_mode()
+    model = AgentConfig.MODEL or PROVIDERS["gemini"]["model"]
+    timeout = timeout or AgentConfig.PROVIDER_TIMEOUT_SECONDS
+    provider = (task or {}).get("provider", "gemini")
+    if provider == "nvidia":
+        model = PROVIDERS["nvidia"]["model"]
+    if mode == "promptql":
+        base = PROMPTQL_API_URL.rstrip("/")
+        if provider == "nvidia":
+            config = PROVIDERS["nvidia"]
+            url = (f"{base}/v1/integration/{config['id']}/integrate.api.nvidia.com"
+                   f"/v1/chat/completions")
+            return GatewayProvider("nvidia", model, url, visitor_token, wire="openai",
+                                   label="NVIDIA", timeout=timeout)
+        config = PROVIDERS["gemini"]
+        url = (f"{base}/v1/integration/{config['id']}/generativelanguage.googleapis.com"
+               f"/v1beta/models/{model}:generateContent")
+        return GatewayProvider("gemini", model, url, visitor_token, wire="gemini",
+                               label="Gemini", timeout=timeout)
+    if provider == "nvidia":
+        raise GenerationFailure(
+            "NVIDIA متاح فقط عبر بوابة PromptQL باتصال شخصي للزائر؛ الوضع المستقل يدعم Gemini.",
+            503, "nvidia_requires_gateway")
+    return GeminiProvider(model, GEMINI_API_KEY, timeout=timeout)
+
+
+def agent_record_cooldown(provider, user_id, retry_after):
+    """Mirror the chat path: only NVIDIA rate limits write cooldown rows."""
+    if provider != "nvidia":
+        return
+    with connect() as db:
+        upsert_nvidia_rate_limit_cooldowns(db, user_id, retry_after)
+
+
+def agent_deps(visitor_token=None, policy=None):
+    """The single construction site for the agent's wiring, both modes included.
+
+    Before R6 the queued path was built here and the inline path was hand-built inside the
+    route -- two descriptions of the same object, which is how a mode starts to differ in
+    more than its schedule. Everything a mode changes now comes from `policy`, so anything
+    a mode does *not* mention cannot drift between them.
+    """
+    # Resolved lazily: the queue worker is built from these deps, and the
+    # approval handshake lives on the service that owns them.
+    policy = policy or execution_policy()
+    config = policy.config or AgentConfig
+    hooks = {"record_cooldown": agent_record_cooldown}
+    if policy.allows_approvals:
+        hooks["wait_for_approval"] = lambda call_id, timeout: agent_service.wait_for_approval(
+            call_id, timeout)
+    return {
+        "store": agent_store,
+        "config": config,
+        "tools": agent_tools,
+        # The provider timeout is the capped one in both modes, so the queued path reads
+        # AgentConfig.PROVIDER_TIMEOUT_SECONDS and the serverless path reads the value
+        # SERVERLESS_CAPS pinned -- the same expression, not a second copy of it.
+        "provider_factory": lambda task=None: agent_provider(
+            task=task, visitor_token=visitor_token,
+            timeout=config.PROVIDER_TIMEOUT_SECONDS),
+        "skills": SKILLS,
+        "limits": {"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR, "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
+        "hooks": hooks,
+        # R3 reads the same directory the HTTP endpoint does (WAHA_RAG_DIR honoured in
+        # one place), so an alternate index can never split retrieval in two.
+        "rag_index_dir": RAG_INDEX_DIR,
+        "inline": policy.is_inline,
+    }
+
+
+# The process-wide service that owns the worker pool. Its mode is a property of the
+# deployment, resolved once at import: on a serverless host it never starts a pool and
+# refuses to queue (see Service.start/Service.submit), because a task nobody runs is a
+# spinner. Per-request policies are re-resolved so a reconfigured cold start is honoured.
+_BOOT_POLICY = execution_policy()
+agent_service = Service(AgentDeps(**{k: v for k, v in
+                                     agent_deps(policy=_BOOT_POLICY).items() if k != "inline"}),
+                        mode=_BOOT_POLICY.mode)
+
+
+def initialize_agent():
+    """Additive agent schema, then recover tasks orphaned by a restart.
+
+    Runs at import like `initialize()`: on Render free (and on Vercel) the
+    process can be recycled at any moment, so boot-time repair is the only
+    place that reliably runs.
+    """
+    return agent_service.bootstrap()
+
+
+initialize()
+initialize_agent()
+
+
+def fail(message, status=400, code="invalid_request"):
+    return jsonify(error=message, code=code), status
 
 
 def client_ip():
@@ -468,7 +667,11 @@ def index():
 def health():
     # Deliberately shallow: no DB query, so keep-alive pings do not wake a
     # scale-to-zero Postgres. Use /readyz for a deep check.
-    return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode())
+    return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode(),
+                   rag=rag_search.status(RAG_INDEX_DIR),
+                   agent={"workers": AgentConfig.WORKERS, "queue": agent_service.queue_size(),
+                          "state": agent_state(), "inline": agent_forces_inline(),
+                          "execution": agent_service.describe()})
 
 
 @app.get("/readyz")
@@ -510,6 +713,10 @@ def me():
                     "requires_personal_connection": k == "nvidia"} for k, v in PROVIDERS.items()],
         nvidia_budget={"per_minute": NVIDIA_PER_MINUTE, "per_24h": NVIDIA_PER_DAY,
                        "scope": "all_app_visitors", "free_quota_verified": False},
+        agent={"enabled": agent_available(), "inline": agent_forces_inline(), "demo": AGENT_FAKE,
+               "model": (AgentConfig.MODEL or PROVIDERS["gemini"]["model"])
+               if agent_available() and not AGENT_FAKE else ("waha-demo" if AGENT_FAKE else None),
+               "tools": [item["name"] for item in agent_tools.available(AgentConfig)]},
         sample_data=True
     )
 
@@ -550,6 +757,45 @@ def install(skill_id):
         run(db, "INSERT OR IGNORE INTO installs VALUES(?,?,?)",
             (g.visitor["id"], skill_id, time.time()))
     return jsonify(ok=True)
+
+
+# --- RAG search (R2) -----------------------------------------------------------
+# `/api/skills?q=` above stays what it always was: a catalog filter. This endpoint
+# is different in kind -- it returns chunks of R1's corpus with their citations --
+# so the two must never be conflated by a caller. Read-only, no model call, no DB
+# write, and it fails closed (503) when the committed index is absent.
+@app.get("/api/search")
+def rag_search_endpoint():
+    query = (request.args.get("q") or "").strip()
+    if not query:
+        return fail("أرسل q للسؤال.", 400, "missing_query")
+    if len(query) > rag_search.MAX_QUERY_CHARS:
+        return fail(f"السؤال أطول من {rag_search.MAX_QUERY_CHARS} حرفاً.", 400, "query_too_long")
+    try:
+        k = int(request.args.get("k") or rag_search.DEFAULT_RESULTS)
+    except ValueError:
+        return fail("k رقم.", 400, "invalid_k")
+    if k < 1:
+        return fail("k يجب أن يكون 1 أو أكثر.", 400, "invalid_k")
+    # Over-large k is clamped, not rejected: the caller asked for more, not for an error.
+    k = min(k, rag_search.MAX_RESULTS)
+
+    def multi(name):
+        raw = request.args.get(name) or ""
+        return [piece.strip() for piece in raw.split(",") if piece.strip()][:20]
+
+    sections, skills = multi("section"), multi("skill")
+    try:
+        payload = rag_search.search(query, k=k, sections=sections, skills=skills,
+                                    index_dir=RAG_INDEX_DIR)
+    except rag_search.RagSearchUnavailable as error:
+        response = jsonify(error=str(error), code="rag_index_missing",
+                           hint="python scripts/rag_index.py ثم أعيد النشر", query=query)
+        return response, 503
+    # No timing values anywhere in the body: two equal queries must return
+    # byte-identical JSON so R4 can snapshot results. Cache-Control is decided
+    # centrally by security_headers (no-store) and is deliberately not forked here.
+    return jsonify(payload)
 
 
 def session_view(db, row, include_messages=False):
@@ -904,6 +1150,226 @@ def message(sid):
                            completion_tokens=? WHERE id=?""",
                     (attempt_status, int((time.time() - now) * 1000), usage.get("prompt_tokens"),
                      usage.get("completion_tokens"), nvidia_attempt_id))
+
+
+# --- Agent runtime API --------------------------------------------------------
+# Same identity, CSRF, CORS and rate-limit rules as the chat path: `protect()`
+# already gates every /api/ POST, and provider calls are booked into the shared
+# `attempts` table by the runtime itself.
+AGENT_STREAM_SECONDS = max(2, min(60, int(os.environ.get("AGENT_STREAM_SECONDS", "20"))))
+
+
+def agent_owner():
+    return g.visitor["id"] if g.visitor else None
+
+
+def agent_client_key():
+    return "ip:" + hashlib.sha256(client_ip().encode()).hexdigest()
+
+
+@app.get("/api/agent/config")
+def agent_config():
+    mode = ai_mode()
+    policy = execution_policy()
+    return jsonify(
+        enabled=agent_available(),
+        ai_mode="demo" if AGENT_FAKE else mode,
+        demo=AGENT_FAKE,
+        model=(AgentConfig.MODEL or PROVIDERS["gemini"]["model"]) if mode != "disabled" else None,
+        inline=policy.is_inline,
+        # R6: the budget the loop will actually enforce, plus why it is capped. `limits`
+        # below stays the *public* knob set, so a client can tell the two apart instead of
+        # assuming the advertised ceiling is the enforced one.
+        execution=policy.describe(),
+        tools=agent_tools.available(AgentConfig),
+        limits=AgentConfig.describe(),
+        providers=[{"key": key, "label": item["label"],
+                    "allowed": key == "gemini" or mode == "promptql"}
+                   for key, item in PROVIDERS.items()],
+        limits_note=("الأدوات التي تحتاج موافقة تُرفض لأن المهمة تُنفَّذ داخل الطلب "
+                     "ولا تستطيع الانتظار" if policy.is_inline else None),
+        sample_data=True,
+    )
+
+
+@app.post("/api/agent/tasks")
+def agent_create_task():
+    user, now = agent_owner(), time.time()
+    data = request.get_json(silent=True) or {}
+    goal = str(data.get("goal", "")).strip()
+    if not 8 <= len(goal) <= AgentConfig.MAX_GOAL_CHARS:
+        return fail("اكتب هدفاً بين 8 و" + str(AgentConfig.MAX_GOAL_CHARS) + " حرفاً.")
+    provider = data.get("provider", "gemini")
+    if provider not in PROVIDERS:
+        return fail("اختر مزوّد نموذج صحيحاً.")
+    if not agent_available():
+        return fail("خدمة AI غير مفعّلة على هذا الخادم بعد.", 503, "ai_disabled")
+    if provider == "nvidia" and ai_mode() != "promptql":
+        return fail("NVIDIA متاح فقط عبر بوابة PromptQL باتصال الزائر الشخصي؛ "
+                    "الوضع المستقل يدعم Gemini.", 503, "nvidia_requires_gateway")
+    with connect() as db:
+        cooldown_until = active_provider_cooldown(db, provider, user, now)
+    if cooldown_until > now:
+        response, status = fail("هذا المزوّد في فترة انتظار. لن يتم التحويل تلقائياً لمزوّد آخر.",
+                                429, "provider_cooldown")
+        response.headers["Retry-After"] = str(max(1, int(cooldown_until - now)))
+        return response, status
+    if agent_store.count_active(user) >= AgentConfig.MAX_ACTIVE_PER_USER:
+        return fail("لديك مهمة قيد التشغيل الآن. انتظر انتهاءها أو ألغها.", 409, "agent_busy")
+    mode = "demo" if AGENT_FAKE else ai_mode()
+    policy = execution_policy()
+    model = (AgentConfig.MODEL or PROVIDERS[provider]["model"]) if not AGENT_FAKE else "waha-demo"
+    # A request-bound task has to finish before the platform freezes it, so the loop's
+    # budgets arrive capped -- by policy, not by an `if` in this handler.
+    task_id = agent_store.create_task(user, goal, provider, model,
+                                      now + policy.config.DEADLINE_SECONDS, agent_client_key())
+    if policy.is_inline:
+        service = Service.for_request(AgentDeps(**agent_deps(
+            visitor_token=g.visitor["token"] if policy.uses_request_visitor_token else None,
+            policy=policy)), policy)
+        task = service.execute_inline(task_id) or agent_store.get_task(task_id, user)
+        return jsonify(task=task, mode=policy.mode, execution=policy.describe()), 201
+    agent_service.submit(task_id)
+    task = agent_store.get_task(task_id, user)
+    return jsonify(task=task, mode=policy.mode, poll="./api/agent/tasks/" + task_id,
+                   stream="./api/agent/tasks/" + task_id + "/stream"), 201
+
+
+@app.get("/api/agent/tasks")
+def agent_list_tasks():
+    user = agent_owner()
+    if not user:
+        return jsonify(tasks=[])
+    return jsonify(tasks=agent_store.list_tasks(user, limit=20))
+
+
+@app.get("/api/agent/tasks/<task_id>")
+def agent_get_task(task_id):
+    task = agent_store.get_task(task_id, agent_owner())
+    if task is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    return jsonify(task=task)
+
+
+@app.get("/api/agent/tasks/<task_id>/events")
+def agent_task_events(task_id):
+    user = agent_owner()
+    if agent_store.get_task(task_id, user) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    try:
+        cursor = max(0, int(request.args.get("cursor", 0)))
+    except ValueError:
+        cursor = 0
+    events = agent_store.events_after(task_id, cursor, limit=100)
+    return jsonify(events=events, cursor=events[-1]["id"] if events else cursor,
+                   status=agent_store.task_status(task_id))
+
+
+@app.get("/api/agent/tasks/<task_id>/stream")
+def agent_task_stream(task_id):
+    user = agent_owner()
+    if user and agent_store.get_task(task_id, user) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+
+    def feed():
+        cursor, deadline = 0, time.time() + AGENT_STREAM_SECONDS
+        while True:
+            for item in agent_store.events_after(task_id, cursor, limit=50):
+                cursor = max(cursor, item["id"])
+                payload = json.dumps(item["payload"], ensure_ascii=False)
+                yield f"id: {item['id']}\nevent: {item['type']}\ndata: {payload}\n\n"
+            status = agent_store.task_status(task_id)
+            if status is None:
+                yield "event: gone\ndata: {}\n\n"
+                return
+            yield f"event: status\ndata: {{\"status\": \"{status}\"}}\n\n"
+            if status not in ("queued", "running", "awaiting_approval") or time.time() > deadline:
+                yield "event: close\ndata: {}\n\n"
+                return
+            time.sleep(0.4)
+
+    response = app.response_class(feed(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.post("/api/agent/tasks/<task_id>/approve")
+def agent_approve(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    data = request.get_json(silent=True) or {}
+    call_id = str(data.get("call_id", ""))
+    approve = bool(data.get("approve", False))
+    if not call_id:
+        return fail("أرسل معرّف الطلب.")
+    if not agent_service.decide(call_id, approve):
+        return fail("هذا الطلب لم يعد بانتظار موافقتك (انتهت صلاحيته أو نُفّذ).",
+                    409, "approval_stale")
+    return jsonify(ok=True, decision="approved" if approve else "denied")
+
+
+@app.post("/api/agent/tasks/<task_id>/cancel")
+def agent_cancel(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    cancelled = agent_service.cancel(task_id)
+    return jsonify(ok=bool(cancelled), status=agent_store.task_status(task_id))
+
+
+@app.post("/api/agent/tasks/<task_id>/delete")
+def agent_delete_task(task_id):
+    if agent_store.get_task(task_id, agent_owner()) is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    agent_service.cancel(task_id)
+    return jsonify(ok=agent_store.delete_task(task_id, agent_owner()))
+
+
+@app.get("/api/agent/artifacts/<int:artifact_id>")
+def agent_artifact(artifact_id):
+    artifact = agent_store.get_artifact(artifact_id, agent_owner())
+    if artifact is None:
+        return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(artifact=artifact)
+
+
+@app.post("/api/agent/artifacts/<int:artifact_id>/delete")
+def agent_artifact_delete(artifact_id):
+    user = agent_owner()
+    if agent_store.get_artifact(artifact_id, user) is None:
+        return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(ok=agent_store.delete_artifact(artifact_id, user))
+
+
+@app.get("/api/agent/memory")
+def agent_memory_list():
+    user = agent_owner()
+    if not user:
+        return jsonify(memory=[])
+    return jsonify(memory=agent_store.list_memory(user, limit=AgentConfig.MEMORY_MAX_ITEMS))
+
+
+@app.post("/api/agent/memory")
+def agent_memory_add():
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content", "")).strip()
+    kind = str(data.get("kind", "note")).strip() or "note"
+    if kind not in ("note", "preference", "goal"):
+        return fail("نوع الملاحظة غير معروف.")
+    if not 3 <= len(content) <= 400:
+        return fail("الملاحظة يجب أن تكون بين 3 و400 حرف.")
+    memory_id = agent_store.remember(agent_owner(), kind, content, limit=AgentConfig.MEMORY_MAX_ITEMS)
+    return jsonify(id=memory_id, items=agent_store.memory_count(agent_owner())), 201
+
+
+@app.post("/api/agent/memory/<int:memory_id>/delete")
+def agent_memory_delete(memory_id):
+    if not agent_store.delete_memory(agent_owner(), memory_id):
+        return fail("الملاحظة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    return jsonify(ok=True)
+
 
 
 if __name__ == "__main__":
