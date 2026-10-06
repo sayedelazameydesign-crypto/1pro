@@ -124,7 +124,7 @@ def _clock(ctx, args):
 
 
 def _skill_lookup(ctx, args):
-    query = str(args.get("query", "")).strip().toLocaleLowerCase()
+    query = str(args.get("query", "")).strip().lower()
     skill_id = str(args.get("skill_id", "")).strip()
     skills = ctx.skills or []
     if skill_id:
@@ -137,7 +137,7 @@ def _skill_lookup(ctx, args):
     scored = []
     for item in skills:
         haystack = " ".join([item.get("name", ""), item.get("description", ""),
-                             " ".join(item.get("tags", []))]).toLocaleLowerCase()
+                             " ".join(item.get("tags", []))]).lower()
         if query in haystack:
             scored.append(item)
     if not scored:
