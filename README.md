@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 257 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + فحوص البايت
+على `sqlite` و`postgres` معًا: 258 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **ما لم يحدث بعد:** لا خادم منشور — `docs/` يبقى كتالوجًا ثابتًا ما دام
 `docs/data/config.json.api_base` فارغًا، ولا Neon/Render/Vercel مُهيَّأ من هنا، ولا مفتاح
@@ -343,6 +343,11 @@ Vercel؛ المشروع التجاري يتطلب Pro.
 - **لا تجمع `builds` مع `functions`** في `vercel.json`: الاثنان متعارضان
   ويفشل البناء برسالة «Conflicting functions and builds». كذلك `excludeFiles`
   صالح **داخل** `functions` فقط وليس في جذر الملف.
+- **`requirements.txt` في الجذر مسطّح عن قصد**: Vercel يقرأ هذا الملف بمحلّله الخاص،
+  ولا يفهم سطر `-r backend/requirements.txt` — يفشل البناء بـ
+  `could not parse requirements.txt: Error parsing included file`. لذلك القائمة مكتوبة
+  كاملة في الجذر، ويحرس تطابقها مع `backend/requirements.txt` اختبار
+  (`tests/test_vercel_wrapper.py::RootManifestTests`) حتى لا تنحرف نسختان بصمت.
 - **`/tmp` وحده قابل للكتابة**: `backend/app.py` يحوّل مسار SQLite وملف
   `csrf.secret` إلى `/tmp` عند وجود المتغير `VERCEL`. لكن `/tmp` زائل ويُعاد
   تدويره، **لذلك `WAHA_SECRET` يجب أن يكون مضبوطاً في Production** وإلا

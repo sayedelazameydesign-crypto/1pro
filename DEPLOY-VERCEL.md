@@ -31,6 +31,11 @@
    `vercel.json` في الجذر، والدالة في `api/index.py`، و`vercel.json` يعيد كتابة كل المسارات إليها.
 3. لا تعدّل Build Command أو Output Directory. الملف يضبط كل شيء.
 
+> **`requirements.txt` في الجذر مسطّح عن قصد.** Vercel يقرأه بمحلّل لا يفهم `-r`، وإن
+> وجد سطر include يفشل البناء بـ`could not parse requirements.txt: Error parsing
+> included file`. النسخة المسطّحة تُطابق `backend/requirements.txt` بايتًا ببايت في
+> الحزم المثبَّتة، ويحرس التطابق اختبار في CI.
+
 ### متغيرات البيئة (Production فقط)
 
 | المتغير | القيمة | ملاحظة |

@@ -75,19 +75,38 @@ class VercelConfigTests(unittest.TestCase):
         self.assertIs(wsgi.application, entrypoint.app)
         self.assertEqual(entrypoint.app.name, "backend.app")
 
-    def test_root_requirements_delegate_and_keep_binary_psycopg(self):
-        root = (ROOT / "requirements.txt").read_text()
-        backend = (ROOT / "backend/requirements.txt").read_text()
+class RootManifestTests(unittest.TestCase):
+    """Vercel's builder parses the root manifest itself and cannot follow an `-r`
+    include: the build dies with "could not parse requirements.txt: Error parsing
+    included file", which is what kept every deployment red. The file is therefore
+    flat -- and because a flat file can drift, equality with the file Render installs
+    is enforced here rather than trusted.
+    """
 
-        # One source of truth, so Render and Vercel cannot drift.
-        self.assertIn("-r backend/requirements.txt", root)
+    @staticmethod
+    def pins(text):
+        return [line.strip() for line in text.splitlines()
+                if line.strip() and not line.strip().startswith("#")]
 
-        # A bare psycopg pin drops the bundled libpq that the serverless image
-        # has no system copy of.
-        bare = [line for line in root.splitlines()
-                if re.match(r"\s*psycopg\s*[=~<>]", line)]
-        self.assertEqual(bare, [], f"root requirements.txt re-pins psycopg: {bare}")
-        self.assertIn("psycopg[binary]", backend)
+    def test_the_root_manifest_carries_no_include_directive(self):
+        root = self.pins((ROOT / "requirements.txt").read_text())
+        includes = [line for line in root
+                    if line.startswith(("-r ", "--requirement", "-e "))]
+        self.assertEqual(includes, [],
+                         f"the root manifest still includes files, and Vercel cannot parse that: {includes}")
+
+    def test_both_manifests_pin_the_same_runtime(self):
+        root = self.pins((ROOT / "requirements.txt").read_text())
+        backend = self.pins((ROOT / "backend/requirements.txt").read_text())
+        self.assertEqual(root, backend,
+                         "requirements.txt drifted from backend/requirements.txt; bump both")
+        # A bare psycopg pin drops the bundled libpq that the serverless image has no
+        # system copy of, and no manifest may carry it.
+        for name, lines in (("requirements.txt", root), ("backend/requirements.txt", backend)):
+            self.assertTrue(any(line.startswith("psycopg[binary]") for line in lines),
+                            f"{name} lost the [binary] extra: {lines}")
+            bare = [line for line in lines if re.match(r"psycopg\s*[=~<>]", line)]
+            self.assertEqual(bare, [], f"{name} re-pins psycopg without [binary]: {bare}")
 
 
 if __name__ == "__main__":
