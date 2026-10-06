@@ -34,17 +34,18 @@ const state={me:null,skills:[],sessions:[],view:'discover',selected:null,current
 let toastTimer;
 function toast(text){$('toast').textContent=text;$('toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hidden'),3500);}
 function showError(id,error){$(id).textContent=error.message||String(error);$(id).classList.remove('hidden');}
-// Backend adapter: talks to a real Waha server when data/config.json sets
-// api_base; otherwise stays fully offline (static Pages mode, no external calls).
-const backend={base:'',token:'',csrf:'',status:'off'};
+// Backend adapter: talks to a Waha server when data/config.json sets api_base;
+// otherwise it stays in static-catalog mode and makes no API requests.
+const backend={base:'',token:'',csrf:'',status:'off',configError:false};
 try{backend.token=localStorage.getItem('waha-token')||'';}catch(error){}
 async function loadBackend(){
  try{
   const response=await fetch('./data/config.json',{cache:'no-store'});
+  if(!response.ok)throw new Error('config.json returned '+response.status);
   const config=await response.json();
   const base=(config&&typeof config.api_base==='string')?config.api_base.trim():'';
   if(base)backend.base=base.replace(/\/+$/,'');
- }catch(error){}
+ }catch(error){backend.configError=true;}
 }
 // The free Render plan sleeps after ~15 idle minutes, so the first request can
 // take ~50s. Give backend calls a long timeout, keep the user informed, and
@@ -52,6 +53,11 @@ async function loadBackend(){
 const BACKEND_TIMEOUT_MS=80000;
 function serverNote(text){const el=document.querySelector('.ai-status small');if(el)el.textContent=text;}
 async function requestBackend(path,options){
+ if(!backend.base){
+  throw new Error(backend.configError
+   ?'تعذّر قراءة إعداد الواجهة؛ التصفح والتنزيل متاحان، لكن الخادم غير متصل.'
+   :'خادم واحة غير مُهيّأ بعد؛ اربط الواجهة بعنوانه في ملف الإعداد أولاً.');
+ }
  const controller=new AbortController();
  const timer=setTimeout(()=>controller.abort(),BACKEND_TIMEOUT_MS);
  try{
@@ -115,7 +121,9 @@ async function remote(path,body,retried){
 }
 async function api(path,body){
  if(!backend.base){
-  if(body!==undefined)throw new Error('هذه نسخة Pages ثابتة؛ الحفظ وAI يعملان بعد ربط خادم واحة في ملف الإعداد.');
+  if(body!==undefined)throw new Error(backend.configError
+   ?'تعذّر قراءة إعداد الواجهة؛ لا يمكن الاتصال بخادم واحة الآن.'
+   :'خادم واحة غير مُهيّأ بعد؛ الحفظ والمحادثات وAI تتاح بعد ربط api_base في ملف الإعداد.');
   if(path==='/api/me')return {authenticated:false,user:null,csrf:null,model:null,provider:null,ai_enabled:false,sample_data:true};
   if(path==='/api/sessions')return {sessions:[],installed_count:0,reply_count:0};
   if(path==='/api/skills'){
@@ -124,17 +132,27 @@ async function api(path,body){
    const data=await response.json();
    return {skills:data.skills.map(s=>({...s,installed:false}))};
   }
-  throw new Error('هذه الوظيفة غير متاحة في نسخة Pages.');
+  throw new Error('هذه الوظيفة تحتاج إلى ربط خادم واحة في docs/data/config.json.');
  }
  return remote(path,body);
 }
 function applyBackendUi(){
- if(!backend.base)return;
  const version=document.querySelector('.version');
- if(version)version.textContent='LIVE';
  const banner=document.querySelector('#identity-banner p');
  const aiSmall=document.querySelector('.ai-status small');
+ const note=document.querySelector('.bottom-note p');
+ if(!backend.base){
+  if(version)version.textContent='STATIC';
+  if(banner)banner.textContent=backend.configError
+   ?'تعذّر تحميل إعداد الواجهة؛ البحث والتنزيل متاحان، لكن خادم واحة غير متصل.'
+   :'خادم واحة غير مُهيّأ بعد؛ البحث والتنزيل متاحان، وستعمل المحادثات والحفظ وAI بعد ربط عنوان الخادم.';
+  if(aiSmall)aiSmall.textContent=backend.configError?'تعذّر قراءة الإعداد':'الخادم غير مُهيّأ بعد';
+  if(note)note.innerHTML='الواجهة في وضع الكتالوج الثابت؛ لا تُرسل محادثات أو أسئلة إلى AI ما دام الخادم غير مربوط.<br><span>المهارات عينات عربية، والتنزيل يحفظ ملف JSON فقط.</span>';
+  return;
+ }
+ if(version)version.textContent='LIVE';
  if(backend.status==='unreachable'){
+  if(version)version.textContent='OFFLINE';
   if(banner)banner.textContent='تعذّر الوصول إلى خادم واحة الآن؛ الخادم المجاني ينام بعد فترة خمول، وأول طلب بعده قد يستغرق حتى دقيقة. حدّث الصفحة بعد قليل؛ البحث والتنزيل يعملان الآن.';
   if(aiSmall)aiSmall.textContent='الخادم غير متاح';
   return;
@@ -143,7 +161,6 @@ function applyBackendUi(){
   if(state.me.ai_enabled)aiSmall.textContent=(state.me.model||'Gemini')+' · جاهز';
   else aiSmall.textContent='غير مُفعّل على الخادم بعد';
  }
- const note=document.querySelector('.bottom-note p');
  if(note)note.innerHTML='هذه الواجهة متصلة بخادم واحة المستقل؛ المحادثات تُحفظ على الخادم، وتُرسل نصوص الأسئلة إلى خدمة AI عند تفعيلها.<br><span>المهارات عينات عربية، والتنزيل يحفظ ملف JSON فقط.</span>';
 }
 
@@ -161,7 +178,7 @@ async function downloadSkill(id){
  }catch(error){toast(error.message);}
 }
 
-function authenticated(){if(state.me?.authenticated)return true;toast(backend.base?'تعذّر التحقق من خادم واحة؛ حدّث الصفحة وحاول مجدداً.':'الحفظ وAI يعملان بعد ربط خادم واحة في ملف الإعداد.');return false;}
+function authenticated(){if(state.me?.authenticated)return true;toast(backend.base?'تعذّر التحقق من خادم واحة؛ حدّث الصفحة وحاول مجدداً.':(backend.configError?'تعذّر قراءة إعداد الواجهة؛ لا يمكن الاتصال بخادم واحة.':'خادم واحة غير مُهيّأ بعد؛ اربط api_base في ملف الإعداد أولاً.'));return false;}
 function setTheme(theme){
  document.documentElement.dataset.theme=theme;
  localStorage.setItem('waha-theme',theme);
@@ -194,7 +211,7 @@ function renderSkills(){
  $('skill-grid').innerHTML=filtered.map(s=>`<article class="skill-card"><div class="card-top"><div class="skill-icon ${escapeHtml(s.color)}">${icon(s.icon)}</div><span class="badge ${s.installed?'installed-tag':''}">${s.installed?'في مكتبتك':'مهارة تجريبية'}</span></div><h3>${escapeHtml(s.name)}</h3><p>${escapeHtml(s.description)}</p><div class="skill-meta"><span>${escapeHtml(s.category)}</span><span class="dot"></span><span>${escapeHtml(s.difficulty)}</span><span class="dot"></span><span>تعلّم تفاعلي</span></div><div class="card-footer"><button class="card-action" data-skill="${s.id}">استكشف المهارة${icon('arrow')}</button><button class="icon-button" data-download="${s.id}" aria-label="تنزيل ${escapeHtml(s.name)} JSON">${icon('download')}</button></div></article>`).join('');
 }
 function renderChats(){
- if(!state.sessions.length){const emptyText=state.me?.authenticated?'ابدأ جلسة مع أي مهارة، وستجدها هنا لاحقاً.':(backend.base&&backend.status==='unreachable'?'الخادم غير متاح حالياً؛ حدّث الصفحة وحاول مجدداً.':'المحادثات ليست جزءاً من نسخة Pages الثابتة.');$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${emptyText}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
+ if(!state.sessions.length){const emptyText=state.me?.authenticated?'ابدأ جلسة مع أي مهارة، وستجدها هنا لاحقاً.':(backend.base&&backend.status==='unreachable'?'الخادم غير متاح حالياً؛ حدّث الصفحة وحاول مجدداً.':'خادم واحة غير مُهيّأ بعد؛ اربط api_base لعرض محادثاتك.');$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${emptyText}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
  $('chats-list').innerHTML=state.sessions.map(s=>{
   const skill=state.skills.find(k=>k.id===s.skill_id);
   return `<button class="chat-card" data-session="${s.id}"><div class="skill-icon ${skill?.color||'mint'}">${icon(skill?.icon||'message')}</div><div class="chat-details"><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.skill_name)} · ${modes[s.mode]}</p></div><time>${new Date(s.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`;
@@ -295,7 +312,7 @@ $('start-session').addEventListener('click',async()=>{
 $('chat-back').addEventListener('click',()=>switchView('chats'));
 $('export-chat').addEventListener('click',async()=>{
  if(!state.current)return;
- if(!backend.base){window.location.href='/api/sessions/'+state.current.id+'/export';return;}
+ if(!backend.base){toast('خادم واحة غير مُهيّأ بعد؛ لا يمكن تصدير محادثة قبل ربطه.');return;}
  try{
   const headers={};
   if(backend.token)headers['Authorization']='Bearer '+backend.token;

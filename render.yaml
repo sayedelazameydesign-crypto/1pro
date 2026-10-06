@@ -1,7 +1,10 @@
-# Render blueprint for the standalone Waha backend.
-# Docs: deploy from repo root; the service lives in backend/.
-# The health check is deliberately /health (shallow): keep-alive pings must not
-# wake a scale-to-zero Neon Postgres and burn free-tier CU-hours.
+# Render Blueprint for standalone Waha: Flask API + static docs frontend.
+# Deploy from the repository root. docs/ is already-built static content, so the
+# static site does not need a build command.
+# Render may deploy both services in the same Blueprint sync; it does not
+# guarantee their order. Keep the frontend disconnected until manual wiring.
+# Set WAHA_ALLOWED_ORIGINS to waha-site's confirmed public origin after deploy;
+# keep it to the origin only (scheme + host, with no path). Do not add dependsOn.
 services:
   - type: web
     name: waha-backend
@@ -22,4 +25,18 @@ services:
       - key: WAHA_SECRET
         generateValue: true
       - key: WAHA_ALLOWED_ORIGINS
-        value: https://sayedelazameydesign-crypto.github.io
+        # Intentionally empty until Render assigns and we verify waha-site's URL.
+        value: ""
+
+  # Static sites use runtime: static (no compute plan); docs/ is already built.
+  - type: web
+    name: waha-site
+    runtime: static
+    # Isolate the root-level Vercel requirements.txt from Render's static build.
+    rootDir: docs
+    staticPublishPath: .
+    # Avoid serving a stale API endpoint from an HTTP/CDN cache after redeploy.
+    headers:
+      - path: /data/config.json
+        name: Cache-Control
+        value: no-store

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Smoke test for the standalone Waha backend (Render + Neon, GitHub Pages origin).
+# Smoke test for the standalone Waha backend (Render + Neon, explicit frontend origin).
 #
 # Usage:
-#   scripts/smoke.sh https://<service>.onrender.com
-#   scripts/smoke.sh https://<service>.onrender.com https://sayedelazameydesign-crypto.github.io
+#   scripts/smoke.sh https://<api-host>.onrender.com https://<site-host>.onrender.com
 #
 # Notes:
 #   * Every call uses --max-time 90: the first request after Render free-tier
@@ -12,9 +11,9 @@
 set -u
 
 BASE="${1:-}"
-ORIGIN="${2:-https://sayedelazameydesign-crypto.github.io}"
-if [ -z "$BASE" ]; then
-  echo "usage: $0 https://<service>.onrender.com [allowed-origin]" >&2
+ORIGIN="${2:-}"
+if [ -z "$BASE" ] || [ -z "$ORIGIN" ]; then
+  echo "usage: $0 https://<api-host>.onrender.com https://<frontend-origin>" >&2
   exit 2
 fi
 BASE="${BASE%/}"
@@ -45,7 +44,7 @@ else
   bad "/readyz returned $code, expected 204 (check DATABASE_URL, sslmode, and Neon wake-up)"
 fi
 
-echo "== CORS preflight from the Pages origin =="
+echo "== CORS preflight from the configured frontend origin =="
 code="$(curl -sS --max-time 90 -D "$TMP/preflight.headers" -o "$TMP/preflight.body" -w '%{http_code}' \
   -X OPTIONS -H "Origin: $ORIGIN" -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type,x-waha-csrf' "$BASE/api/sessions" || echo 000)"
@@ -94,7 +93,7 @@ fi
 
 CONFIG="$(dirname "$0")/../docs/data/config.json"
 if [ -f "$CONFIG" ] && ! grep -q "\"api_base\": *\"$BASE\"" "$CONFIG"; then
-  echo "WARN  docs/data/config.json api_base does not point at $BASE yet (Pages stays static)"
+  echo "WARN  docs/data/config.json api_base does not point at $BASE yet (the static frontend is not connected)"
 fi
 
 echo

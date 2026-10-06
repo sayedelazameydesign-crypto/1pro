@@ -3,14 +3,14 @@
 قالب جاهز للرفع إلى المستودع المقترح:
 https://github.com/sayedelazameydesign-crypto/1pro
 
-**الحالة:** الكود مُجهّز ومُختبر محلياً ومرفوع إلى هذا المستودع. حالة CI الفعلية تُعرض في Actions؛ Pages وDiscussions لم تُفعّلا ضمن هذا الرفع.
+**الحالة:** الكود مُجهّز ومُختبر محلياً ومرفوع إلى هذا المستودع. نُشرت واجهة Pages الثابتة سابقًا؛ تجهيز Render هنا يضيف مسارًا بديلًا للواجهة والخادم المستقل. حالة CI الفعلية تُعرض في Actions؛ Discussions لم تُفعّل بعد.
 لا تحتاج إنشاء مستودع آخر؛ يمكن استخدام `1pro` الموجود.
 
 ## نسختان واضحتان
 
 | النسخة | ما يعمل | ما لا يعمل |
 |---|---|---|
-| `docs/` · GitHub Pages | واجهة عربية RTL، ألوان هادئة، dark mode، بحث وفلاتر، تنزيل 6 مهارات JSON | لا Python، لا SQLite، لا تسجيل حساب، لا حفظ محادثات، لا AI |
+| `docs/` · GitHub Pages أو Render Static Site | واجهة عربية RTL، ألوان هادئة، dark mode، بحث وفلاتر، تنزيل 6 مهارات JSON | بلا تسجيل أو حفظ محادثات أو AI حتى يُضبط `api_base` لربطها بالخادم المستقل |
 | `backend/` · تطبيق الخادم | مكتبة خاصة، شرح/تمارين/اختبارات عبر Gemini، حفظ المحادثات وتصديرها وحذفها | يعمل في وضعين: خلف بوابة PromptQL، أو وضع مستقل (انظر «النشر المستقل») |
 
 **Pages تستضيف ملفات ثابتة فقط.** ربطها بخادم خارجي يتطلب نظام دخول
@@ -87,33 +87,48 @@ git push -u origin main
 لا تستخدم force push. إذا ظهر أن المستودع يحتوي تغييرات، اجلبها أولاً واعمل
 على فرع منفصل بدلاً من استبدالها. لا تشارك مفاتيح GitHub في المحادثة.
 
-## تفعيل Pages — بعد الرفع
+## تفعيل Pages — بديل اختياري
+
+هذا المسار اختياري عند نشر الواجهة على Render Static Site. إذا اخترت Pages:
 
 1. في إعدادات المستودع: **Pages → Source → GitHub Actions**.
 2. افتح **Actions → Publish static skill catalog to Pages → Run workflow**.
 3. وافق على النشر إذا طلبت بيئة `github-pages` ذلك.
-4. استخدم الرابط الفعلي الذي يعرضه GitHub بعد نجاح المهمة؛ لم يُنشأ رابط حي بعد.
+4. استخدم رابط Pages الفعلي الذي يعرضه GitHub بعد نجاح المهمة.
 
 النشر متعمد أن يكون **يدوياً** في هذه النسخة حتى لا يصبح المحتوى عاماً
-بمجرد push. CI يعمل عند push وPR للتحقق دون مفاتيح أو صلاحيات كتابة.
-الـActions الرسمية مثبتة عند commit محدد؛ حدّثها بعد المراجعة.
+بمجرد push. يمكن لمالك المستودع تشغيله من واجهة GitHub؛ ولا يتطلب ذلك
+صلاحية `workflow_dispatch` من تكامل Arena. CI يعمل عند push وPR للتحقق
+دون مفاتيح أو صلاحيات كتابة. الـActions الرسمية مثبتة عند commit محدد؛
+حدّثها بعد المراجعة.
 
 لا ملف CNAME قبل اختيار نطاق وتهيئة DNS.
 
 ## النشر المستقل — Render + Neon + Gemini
 
-خيار النشر المجاني بدون بطاقة (تحقق من الأسعار قبل الاعتماد عليها؛
-تتغير بسرعة):
+مسار مجاني بلا بطاقة ضمن حدود الخطط، ويتكون من واجهة ثابتة وخادم API:
 
-- **Render** (Web Service مجاني): 512 MB RAM و0.1 CPU، الخدمة تنام بعد
-  15 دقيقة بلا طلبات، والقرص **مؤقت** — لذلك لا يمكن الاعتماد على SQLite
-  المحلي، و5 GB bandwidth شهرياً (منذ أبريل 2026).
-- **Neon** (Postgres): خطة مجانية دائمة بلا بطاقة (100 CU-ساعة شهرياً،
-  0.5 GB تخزين، تنام بعد 5 دقائق خمول). اخترناها على Turso لأن قاعدة
-  البيانات المجانية هناك قد تُؤرشف عند الخمول ولأن تكامل `DATABASE_URL`
-  مع Render هو الأسلوب القياسي.
-- **ملف `render.yaml`** في جذر المستودع يصف الخدمة كاملة (يمكن النشر منه
-  مباشرة: New → Blueprint).
+- **Render**: `waha-backend` خدمة Python مجانية (512 MB RAM و0.1 CPU)
+  و`waha-site` موقع ثابت مجاني ينشر ملفات `docs/` الجاهزة، بلا خطوة build.
+  عُزل جذر الموقع إلى `docs/` حتى لا يحاول Render تثبيت `requirements.txt`
+  الموجود في جذر المستودع والمخصص لـVercel. خدمة الويب تنام بعد 15 دقيقة
+  بلا طلبات، والقرص **مؤقت**؛ لذلك لا تعتمد على SQLite المحلي لحفظ البيانات.
+  قيود الخطط والحصص قد تتغير.
+- **Neon** (Postgres): خطة مجانية بلا بطاقة، تشمل حاليًا 100 CU-ساعة
+  و1 GB تخزين لكل مشروع، وتنام قاعدة البيانات بعد الخمول. اخترناها على
+  Turso لأن تكامل `DATABASE_URL` مع Render هو الأسلوب القياسي.
+- **Gemini API**: استخدم مفتاحًا من الخطة المجانية والنماذج المتاحة لها؛
+  حدود الاستخدام وتوفر النماذج تتغير. أدخل المفتاح في Render فقط.
+- **ملف `render.yaml`** في جذر المستودع يصف الخدمتين ويمكن مزامنتهما
+  من **New → Blueprint**. اسم الواجهة `waha-site`، لكن اعتمد عنوان
+  `onrender.com` الذي تعرضه لوحة Render بعد النشر ولا تفترضه مسبقًا.
+
+`docs/data/config.json` يبقى مؤقتًا هكذا حتى يظهر عنوان API:
+`{"api_base": ""}`. الملف JSON صالح عمدًا؛ لا نضع تعليقًا داخله لأن
+JSON لا يدعم التعليقات، والشرح وخطوات الضبط موضحة أدناه. لا تضع أسرارًا
+في هذا الملف. يطلب `app.js` هذا الملف مع `cache: 'no-store'`، ويضبط
+Blueprint ترويسة `Cache-Control: no-store` على مساره؛ لا نحتاج لاحقة إصدار
+للرابط في المسار المعتاد.
 
 ### متغيرات البيئة
 
@@ -122,40 +137,79 @@ git push -u origin main
 | `DATABASE_URL` | من لوحة Neon (رابط **pooled**) | أبقِ `sslmode=require`. إذا فشل الاتصال احذف `channel_binding=require` (قد لا يدعمه driver قديم)؛ والكود يعطّل prepared statements عبر `prepare_threshold=None` ليتوافق مع pgbouncer في وضع transaction |
 | `GEMINI_API_KEY` | من Google AI Studio | لا تضعه في المستودع أبداً ولا في أي محادثة أو لقطة شاشة؛ إن انكشف فاستبدله (rotate) فوراً من AI Studio |
 | `WAHA_SECRET` | **لا تضبطه يدويًا عند استخدام Blueprint** | `render.yaml` يعلن `generateValue: true` فيولّده Render مرة واحدة ويثبّته عبر النشرات؛ إدخاله يدويًا يتجاوز المولَّد أو يتعارض معه. خارجه (تشغيل محلي) يُنشأ ملف جانبي مؤقت يضيع مع كل نشر فتُبطَل جلسات الزوار |
-| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
+| `WAHA_ALLOWED_ORIGINS` | فارغ مؤقتًا في `render.yaml` | بعد نشر `waha-site`، ضع الأصل الفعلي الذي تعرضه Render (مثل `https://<host>.onrender.com`) بلا مسار أو `/1pro`. حدّث القيمة في `render.yaml` ثم أعد مزامنة Blueprint، أو أدرها من Render مع إبقاء الملف متوافقًا معها |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
 | `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | **وضع PromptQL فقط — لا تضبط أياً منهما في النشر المستقل** | ⚠️ مع `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة `X-PromptQL-Visitor-Token` **بدون تحقق توقيع** (يُفحص `exp` و`sub` فقط، دالة `identity` في `backend/app.py`)، فأي زائر يستطيع تزوير الهوية وتجاوز cooldown/الحدود. كذلك `PROMPTQL_PLATFORM_API_URL` وحده يحوّل مسار AI إلى البوابة ويُلغي مسار `GEMINI_API_KEY`. في النشر المستقل: اترك المتغيرين غير مضبوطين |
 
 أمر البدء: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 90`
 (المهلة 90 ثانية لأن طلب Gemini الواحد قد يستغرق حتى 75 ثانية).
 
-### خطوات مختصرة (بهذا الترتيب)
+### خطوات النشر المختصرة (Render Static Site)
 
-1. **Neon**: أنشئ المشروع والقاعدة، وانسخ رابط **pooled** مع `sslmode=require`.
-   `/readyz` بعد النشر هو الفحص الذي يكشف أي مشكلة في الرابط أو في الـdriver.
-2. **Render Blueprint**: أنشئ الخدمة من `render.yaml`
-   (`DATABASE_URL` + `GEMINI_API_KEY` + `WAHA_ALLOWED_ORIGINS`؛ بدون
-   `WAHA_TRUST_PROMPTQL`؛ و`WAHA_SECRET` يولّده Render تلقائياً).
-3. **Smoke للخادم**:
+1. **Neon**: أنشئ المشروع والقاعدة، وانسخ رابط **pooled** مع
+   `sslmode=require`. `/readyz` بعد النشر يفحص الاتصال والجداول.
+2. **Render Blueprint**: اربط المستودع وأنشئ الموارد من `render.yaml`.
+   أدخل `DATABASE_URL` و`GEMINI_API_KEY` في Render فقط؛ لا تضبط
+   `WAHA_TRUST_PROMPTQL`، واترك `WAHA_SECRET` ليولّده Render.
+   يبدأ `WAHA_ALLOWED_ORIGINS` فارغًا، كما يبقى `api_base` فارغًا؛ لذلك
+   لا تحاول الواجهة الاتصال بالخادم قبل اكتمال الربط.
+3. انتظر حتى يصبح `waha-site` منشورًا، ثم انسخ **عنوانه الفعلي** من لوحة
+   Render. قد ينشر Blueprint الخدمتين في نفس المزامنة؛ هذا آمن ما دام
+   `api_base` فارغًا. لا تفترض النطاق من الاسم وحده.
+4. اضبط `WAHA_ALLOWED_ORIGINS` على أصل الواجهة الفعلي فقط، مثل
+   `https://<host>.onrender.com` بلا مسار أو `/1pro`. حدّث القيمة في
+   `render.yaml` وأعد مزامنة Blueprint، أو اضبطها من لوحة Render مع إبقاء
+   قيمة الملف متوافقة حتى لا تعود إلى قيمة قديمة في مزامنة لاحقة.
+5. افحص الخادم بعد تحديث CORS:
 
    ```bash
-   scripts/smoke.sh https://<service>.onrender.com
-   curl -sS --max-time 90 https://<service>.onrender.com/health
-   curl -sS --max-time 90 -i https://<service>.onrender.com/readyz   # 204 بلا جسم
+   curl -sS --max-time 90 https://<api-host>.onrender.com/health
+   curl -sS --max-time 90 -i https://<api-host>.onrender.com/readyz   # 204 بلا جسم
    ```
 
-   استخدم `--max-time 90` دائماً: أول طلب بعد خمول Render المجاني قد يستغرق
-   ~50 ثانية. نجاح `/readyz` بـ204 يعني أن `initialize()` بنى الجداول على
-   قاعدة Neon الفارغة.
-4. **`docs/data/config.json`**: ضع عنوان الخادم في `api_base` ثم commit وPR
-   (CI يشغّل فحص الفهرس والاختبارات و`node --check`).
-5. **Pages يدوياً**: Actions → «Publish static skill catalog to Pages» →
-   Run workflow، ثم فحص متصفح: أول زيارة بعد خمول تُظهر رسالة
-   «جارٍ إيقاظ خادم واحة…» وتعيد المحاولة تلقائياً، ثم أنشئ جلسة وأرسل رسالة
-   وجرّب التصدير والحذف.
-6. بالتوازي أو بعده: PR صغير للثابت `DEFAULT_RETRY_AFTER_SECONDS` + سطر توثيق.
-   هذا ليس شرطاً للنشر في وضع Gemini المستقل، لأن مسار NVIDIA (صاحب الحد
-   الزمني) معطّل هناك بـ`503 nvidia_requires_gateway`.
+   استخدم `--max-time 90`؛ أول طلب بعد خمول Render قد يتأخر. نجاح
+   `/readyz` بـ204 يعني أن `initialize()` بنى الجداول على قاعدة Neon.
+6. بعد معرفة عنوان الـAPI، ضع عنوانه العام في `api_base` داخل
+   `docs/data/config.json`، ثم ارفع التغيير عبر PR. بعد الدمج يعيد Render
+   نشر `waha-site` تلقائيًا. لا تضف تعليقًا أو سرًا إلى ملف JSON.
+7. بعد نشر الواجهة بالإعداد الجديد، شغّل فحص API وCORS ثم اختبر الموقع:
+
+   ```bash
+   scripts/smoke.sh https://<api-host>.onrender.com https://<site-host>.onrender.com
+   ```
+
+   افتح عنوان `waha-site` وأنشئ هوية زائر، ثم أرسل رسالة وجرب الحفظ
+   والتصدير والحذف. يكفي مشاركة الرابطين العامين للواجهة والـAPI عند طلب
+   المساعدة؛ لا تشارك مفاتيح أو بيانات دخول.
+
+### قائمة مراجعة قبل الدمج إلى `main`
+
+- [ ] راجع diff فرع Arena وتأكد أن الملفات المعدلة تخص تجهيز Render فقط.
+- [ ] لا توجد مفاتيح أو أسرار أو عناوين loopback أو روابط خدمة مؤقتة في `docs/`.
+- [ ] `docs/data/config.json` صالح كـJSON؛ يبقى `api_base` فارغًا حتى يتوفر
+      عنوان HTTPS الفعلي لـ`waha-backend`، وقراءة الملف تستخدم `no-store`.
+- [ ] في أول مزامنة Blueprint، لا يظهر خطأ مخطط؛ راجع الفرق وتأكد أن Render
+      يضيف `waha-site` ولا يحذف أو يستبدل خدمة غير مقصودة.
+- [ ] بعد النشر، يعيد
+      `curl -sSI https://<site-host>.onrender.com/data/config.json`
+      الترويسة `Cache-Control: no-store`.
+- [ ] `rootDir: docs` ينشر `docs/data/config.json` عند المسار العام
+      `/data/config.json` (ويستجيب 200)، لا عند `docs/data/config.json`.
+- [ ] `docs/index.html` لا يحتوي عنوان API أو placeholder ثابتًا؛ مصدره الوحيد
+      `docs/data/config.json`.
+- [ ] فرع `api_base` الفارغ يعرض حالة «الخادم غير مهيّأ» فقط؛ فشل شبكة مع
+      عنوان مضبوط يعرض «الخادم غير متاح» ولا يُعامل كإعداد فارغ.
+- [ ] بعد النشر، `WAHA_ALLOWED_ORIGINS` يساوي أصل `waha-site` الفعلي فقط،
+      بلا `*` أو مسار.
+- [ ] نجحت فحوص CI وفحص الكتالوج، ثم فحص `scripts/smoke.sh` بعنواني
+      الواجهة والـAPI الفعليين.
+
+### بديل GitHub Pages
+
+يمكن إبقاء Pages بدل `waha-site`: عندها استخدم أصل Pages في
+`WAHA_ALLOWED_ORIGINS`، واضبط `api_base` على خادم Render، ثم شغّل
+Workflow Pages يدويًا من حساب مالك المستودع. هذا يتجاوز 403 الخاص بتكامل
+Arena، لكنه يحتاج خطوة يدوية في GitHub.
 
 ### ملاحظات التشغيل المجاني
 
