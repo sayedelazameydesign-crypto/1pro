@@ -352,13 +352,38 @@ function renderAgentChrome(){
  $('agent-tools-list').innerHTML=tools.map(t=>`<span class="agent-tool" title="${escapeHtml(t.description)}">${escapeHtml(t.name)}${t.requires_approval?'<em>موافقة</em>':''}</span>`).join('');
  if(config.demo)$('agent-demo-note').classList.remove('hidden');
 }
+// System components panel: it asks the server for /health and /api/agent/config through the
+// same adapter every other view uses, then renders whatever WahaComponents.build() decides.
+// Nothing here invents a status: a card the server did not answer for stays "غير معروف",
+// and the panel is the only place the page says "LIVE" -- never the catalogue view.
+const components={data:null,loading:false};
+async function loadComponents(){
+ if(!backend.base){components.data=null;renderComponents();return;}
+ components.loading=true;renderComponents();
+ const cached=(agent.config&&!agent.config.error&&agent.config.execution)?agent.config:null;
+ const answers=await Promise.all([
+  remote('/health').catch(()=>null),
+  cached?Promise.resolve(cached):remote('/api/agent/config').catch(()=>null)
+ ]);
+ const [health,config]=answers;
+ components.data=window.WahaComponents.build({apiBase:backend.base,health:health,agentConfig:config,ragMode:rag.mode,
+  error:(health||config)?null:'تعذّر الوصول إلى خادم واحة: لم يصل /health ولا /api/agent/config.'});
+ components.loading=false;renderComponents();
+}
+function renderComponents(){
+ const grid=$('components-grid'),chip=$('components-chip'),foot=$('components-foot');
+ if(!grid)return;
+ const built=components.data||window.WahaComponents.build({apiBase:backend.base,pending:components.loading});
+ if(chip)chip.textContent=({LIVE:'حالة حيّة',LOADING:'جارٍ القراءة…',OFFLINE:'غير متصل',UNREACHABLE:'تعذّر الوصول'})[built.mode]||built.mode;
+ grid.innerHTML=built.cards.map(card=>`<div class="component-card ${escapeHtml(card.state)}"><div class="component-head"><strong>${escapeHtml(card.name)}</strong><span class="component-status ${escapeHtml(card.state)}">${escapeHtml(card.label)}</span></div><p class="component-role">${escapeHtml(card.role)}</p><p class="component-detail">${escapeHtml(card.detail)}</p></div>`).join('');
+ if(foot)foot.textContent=built.note;
+}
 async function loadAgentHistory(){
  if(!agentReady())return;
  try{const data=await api('/api/agent/tasks');agent.history=data.tasks||[];}
  catch(error){agent.history=[];}
  renderAgentHistory();
-}
-function renderAgentHistory(){
+}function renderAgentHistory(){
  const box=$('agent-history');
  if(!agent.history.length){box.innerHTML='<p class="agent-empty">لا مهام بعد. اكتب هدفاً لتبدأ الواحة بالتخطيط.</p>';return;}
  box.innerHTML='<span class="tiny-label">مهام سابقة</span>'+agent.history.slice(0,8).map(t=>`<button class="agent-history-item" data-task="${escapeHtml(t.id)}"><span class="agent-pill ${escapeHtml(t.status)}">${escapeHtml(agentStatus[t.status]||t.status)}</span><strong>${escapeHtml(t.goal.slice(0,70))}</strong><small>${new Date(t.updated_at*1000).toLocaleString('ar-EG',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</small></button>`).join('');
@@ -568,6 +593,7 @@ $('agent-form').addEventListener('submit',startAgentTask);
 
 async function openWorkspace(){
  await loadAgentConfig();
+ await loadComponents();
  await loadAgentHistory();
  await loadMemory();
  if(agent.task)startAgentPolling();
@@ -575,6 +601,7 @@ async function openWorkspace(){
  injectIcons();
 }
 document.querySelectorAll('[data-view]').forEach(el=>el.addEventListener('click',()=>switchView(el.dataset.view)));
+if($('components-refresh'))$('components-refresh').addEventListener('click',loadComponents);
 document.querySelectorAll('.close-dialog').forEach(el=>el.addEventListener('click',()=>el.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d){const r=d.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)d.close();}}));
 $('theme-toggle').addEventListener('click',()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark'));

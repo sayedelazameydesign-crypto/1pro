@@ -7,6 +7,7 @@
   <title>واحة · مكتبة المهارات على GitHub Pages</title>
   <link rel="stylesheet" href="./assets/styles.css">
   <script src="./assets/search.js" defer></script>
+  <script src="./assets/components.js" defer></script>
   <script src="./assets/app.js" defer></script>
 </head>
 <body>
@@ -52,6 +53,12 @@
         <div class="section-heading chats-heading"><div><div class="eyebrow small">من سؤال إلى نتيجة معلّمة</div><h1>مساحة العمل</h1><p>اكتب هدفك، تخطّط الواحة خطواتها، تستخدم الأدوات عند الحاجة، وتعرض الناتج خطوة بخطوة.</p></div><span class="count-label" id="agent-state-chip">…</span></div>
         <div id="agent-off" class="identity-banner hidden"></div>
         <div id="agent-demo-note" class="identity-banner hidden"><span data-icon="shield"></span><p>هذه إجابات تجريبية من وضع العرض في الخادم (<code>AGENT_FAKE=1</code>)؛ لا نموذج ولا اتصال خارجي.</p></div>
+        <details class="system-components" id="system-components">
+          <summary><span data-icon="layers"></span><span>مكوّنات النظام</span><span class="count-label" id="components-chip">…</span></summary>
+          <p class="components-intro">تقرأ هذه اللوحة ما ينشره الخادم فعلاً من <code>/health</code> و<code>/api/agent/config</code>. لا تُلوَّن بطاقة قبل أن يصل ردها، وما لم يُقرأ يُكتب «غير معروف».<button class="secondary tiny-btn" id="components-refresh" type="button">تحديث الحالة</button></p>
+          <div class="components-grid" id="components-grid" aria-live="polite"></div>
+          <p class="components-foot" id="components-foot"></p>
+        </details>
         <div class="agent-grid">
           <div class="agent-main">
             <form id="agent-form" class="agent-composer">
