@@ -32,7 +32,12 @@ ALLOWED_ORIGINS = {origin.strip().rstrip("/")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 PROMPTQL_API_URL = os.environ.get("PROMPTQL_PLATFORM_API_URL", "")
 
-DB_PATH = Path(os.environ.get("WAHA_DB", str(ROOT / "data/waha.db")))
+# Serverless filesystems (Vercel) are read-only except /tmp, so the sqlite file
+# and the csrf.secret sidecar must live on a writable path there. Render/local
+# keep the in-repo path. On Vercel /tmp is ephemeral: set WAHA_SECRET explicitly
+# or visitor sessions are invalidated whenever the container is recycled.
+WRITABLE_ROOT = Path("/tmp") if os.environ.get("VERCEL") else ROOT
+DB_PATH = Path(os.environ.get("WAHA_DB", str(WRITABLE_ROOT / "data/waha.db")))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 WAHA_SECRET = os.environ.get("WAHA_SECRET", "")
