@@ -126,6 +126,14 @@ class GeneratedTestCounts(unittest.TestCase):
         self.assertEqual(set(self.rows), on_disk,
                          "a test file outside the table is how a suite size goes stale")
 
+    def test_readme_quotes_the_same_total_as_the_table(self):
+        # The PR description rotted by advertising a two-phases-old suite size; the README is
+        # the same kind of claim, so it is checked against the generated table, not against
+        # anyone's memory. Only "N اختبار" phrasings are considered.
+        claimed = {int(n) for n in re.findall(r"(\d{2,4})\s+اختبار", README)}
+        self.assertIn(self.total, claimed,
+                      f"README never states the suite total {self.total}; its numbers are: {sorted(claimed)}")
+
     def test_the_browser_harness_reports_the_documented_number(self):
         if shutil.which("node") is None:
             self.skipTest("node is not installed")
