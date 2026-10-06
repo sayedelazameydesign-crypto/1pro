@@ -34,9 +34,10 @@ if str(ROOT) not in sys.path:
 from agent.config import AgentConfig            # noqa: E402
 from agent.providers import GeminiProvider, GatewayProvider  # noqa: E402
 from agent.service import Service               # noqa: E402
+from agent import execution as agent_execution      # noqa: E402
 from agent.store import Store                   # noqa: E402
 import rag_search                          # noqa: E402  (R2: lexical search over data/rag)
-from agent.runtime import Agent, Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
+from agent.runtime import Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
 from agent.tools import build_registry          # noqa: E402
 
 # --- Deployment configuration -------------------------------------------------
@@ -379,18 +380,45 @@ FAKE_SCRIPT = [
 ]
 
 
+def ai_mode():
+    """Server-level AI access path, independent of the per-session provider.
+
+    promptql: every provider goes through the PromptQL gateway (visitor token).
+    gemini:   direct Google API via GEMINI_API_KEY (gemini provider only).
+    disabled: no credentials configured.
+    """
+    if PROMPTQL_API_URL:
+        return "promptql"
+    if GEMINI_API_KEY:
+        return "gemini"
+    return "disabled"
+
+
 def agent_available():
     return AGENT_FAKE or ai_mode() != "disabled"
 
 
-def agent_forces_inline():
-    """Run the loop inside the request instead of a queue.
+def execution_policy():
+    """R6: the only place in the backend that turns a platform fact into a rule.
 
-    Two deployment shapes cannot use a background worker: PromptQL mode (only the
-    request carries the visitor's gateway token) and serverless (Vercel freezes the
-    container the moment the response is sent, so a queued task would never run).
+    `VERCEL` is a *deployment* fact, so it is read here and nowhere else: not in the
+    runtime, not in the provider, not in the tool registry. The agent core receives a
+    resolved policy (a mode, a capped config, two booleans) and stays one implementation
+    for Render, Vercel and PromptQL. `tests/test_agent_no_platform_branching.py` fails if
+    a host name ever appears in `backend/agent/` again -- that is how an "exception for one
+    platform" turns into two products, and it is cheap to prevent and expensive to notice.
+
+    Resolved per call on purpose: the value is a property of the request path, and a test
+    (or a reconfigured cold start) must not need to re-import this module to change it.
     """
-    return ai_mode() == "promptql" or bool(os.environ.get("VERCEL"))
+    return agent_execution.resolve(ai_mode=ai_mode(),
+                                   serverless=bool(os.environ.get("VERCEL")),
+                                   config=AgentConfig)
+
+
+def agent_forces_inline():
+    """True when the loop runs inside the request instead of a queue (see above)."""
+    return execution_policy().is_inline
 
 
 def agent_state():
@@ -439,29 +467,50 @@ def agent_record_cooldown(provider, user_id, retry_after):
         upsert_nvidia_rate_limit_cooldowns(db, user_id, retry_after)
 
 
-def agent_deps(visitor_token=None, inline=False):
+def agent_deps(visitor_token=None, policy=None):
+    """The single construction site for the agent's wiring, both modes included.
+
+    Before R6 the queued path was built here and the inline path was hand-built inside the
+    route -- two descriptions of the same object, which is how a mode starts to differ in
+    more than its schedule. Everything a mode changes now comes from `policy`, so anything
+    a mode does *not* mention cannot drift between them.
+    """
     # Resolved lazily: the queue worker is built from these deps, and the
     # approval handshake lives on the service that owns them.
+    policy = policy or execution_policy()
+    config = policy.config or AgentConfig
     hooks = {"record_cooldown": agent_record_cooldown}
-    if not inline:
+    if policy.allows_approvals:
         hooks["wait_for_approval"] = lambda call_id, timeout: agent_service.wait_for_approval(
             call_id, timeout)
     return {
         "store": agent_store,
-        "config": AgentConfig,
+        "config": config,
         "tools": agent_tools,
-        "provider_factory": lambda task=None: agent_provider(task=task, visitor_token=visitor_token),
+        # The provider timeout is the capped one in both modes, so the queued path reads
+        # AgentConfig.PROVIDER_TIMEOUT_SECONDS and the serverless path reads the value
+        # SERVERLESS_CAPS pinned -- the same expression, not a second copy of it.
+        "provider_factory": lambda task=None: agent_provider(
+            task=task, visitor_token=visitor_token,
+            timeout=config.PROVIDER_TIMEOUT_SECONDS),
         "skills": SKILLS,
         "limits": {"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR, "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
         "hooks": hooks,
         # R3 reads the same directory the HTTP endpoint does (WAHA_RAG_DIR honoured in
         # one place), so an alternate index can never split retrieval in two.
         "rag_index_dir": RAG_INDEX_DIR,
-        "inline": inline,
+        "inline": policy.is_inline,
     }
 
 
-agent_service = Service(AgentDeps(**{k: v for k, v in agent_deps().items() if k != 'inline'}))
+# The process-wide service that owns the worker pool. Its mode is a property of the
+# deployment, resolved once at import: on a serverless host it never starts a pool and
+# refuses to queue (see Service.start/Service.submit), because a task nobody runs is a
+# spinner. Per-request policies are re-resolved so a reconfigured cold start is honoured.
+_BOOT_POLICY = execution_policy()
+agent_service = Service(AgentDeps(**{k: v for k, v in
+                                     agent_deps(policy=_BOOT_POLICY).items() if k != "inline"}),
+                        mode=_BOOT_POLICY.mode)
 
 
 def initialize_agent():
@@ -480,20 +529,6 @@ initialize_agent()
 
 def fail(message, status=400, code="invalid_request"):
     return jsonify(error=message, code=code), status
-
-
-def ai_mode():
-    """Server-level AI access path, independent of the per-session provider.
-
-    promptql: every provider goes through the PromptQL gateway (visitor token).
-    gemini:   direct Google API via GEMINI_API_KEY (gemini provider only).
-    disabled: no credentials configured.
-    """
-    if PROMPTQL_API_URL:
-        return "promptql"
-    if GEMINI_API_KEY:
-        return "gemini"
-    return "disabled"
 
 
 def client_ip():
@@ -635,7 +670,8 @@ def health():
     return jsonify(ok=True, database="postgres" if POSTGRES else "sqlite", ai=ai_mode(),
                    rag=rag_search.status(RAG_INDEX_DIR),
                    agent={"workers": AgentConfig.WORKERS, "queue": agent_service.queue_size(),
-                          "state": agent_state(), "inline": agent_forces_inline()})
+                          "state": agent_state(), "inline": agent_forces_inline(),
+                          "execution": agent_service.describe()})
 
 
 @app.get("/readyz")
@@ -1123,21 +1159,6 @@ def message(sid):
 AGENT_STREAM_SECONDS = max(2, min(60, int(os.environ.get("AGENT_STREAM_SECONDS", "20"))))
 
 
-class _InlineLimits:
-    """Config proxy used when a task runs inside the request (PromptQL mode).
-
-    A request-bound agent cannot wait for approvals and must stay short, so the
-    loop gets a reduced step/AI budget while every other knob is inherited.
-    """
-
-    def __init__(self, base, **overrides):
-        self.__dict__["_base"] = base
-        self.__dict__.update(overrides)
-
-    def __getattr__(self, name):
-        return getattr(self.__dict__["_base"], name)
-
-
 def agent_owner():
     return g.visitor["id"] if g.visitor else None
 
@@ -1149,20 +1170,24 @@ def agent_client_key():
 @app.get("/api/agent/config")
 def agent_config():
     mode = ai_mode()
-    inline = agent_forces_inline()
+    policy = execution_policy()
     return jsonify(
         enabled=agent_available(),
         ai_mode="demo" if AGENT_FAKE else mode,
         demo=AGENT_FAKE,
         model=(AgentConfig.MODEL or PROVIDERS["gemini"]["model"]) if mode != "disabled" else None,
-        inline=inline,
+        inline=policy.is_inline,
+        # R6: the budget the loop will actually enforce, plus why it is capped. `limits`
+        # below stays the *public* knob set, so a client can tell the two apart instead of
+        # assuming the advertised ceiling is the enforced one.
+        execution=policy.describe(),
         tools=agent_tools.available(AgentConfig),
         limits=AgentConfig.describe(),
         providers=[{"key": key, "label": item["label"],
                     "allowed": key == "gemini" or mode == "promptql"}
                    for key, item in PROVIDERS.items()],
-        limits_note=("الأدوات التي تحتاج موافقة تُرفض في وضع PromptQL لأن الطلب "
-                     "لا يستطيع الانتظار" if inline else None),
+        limits_note=("الأدوات التي تحتاج موافقة تُرفض لأن المهمة تُنفَّذ داخل الطلب "
+                     "ولا تستطيع الانتظار" if policy.is_inline else None),
         sample_data=True,
     )
 
@@ -1192,41 +1217,21 @@ def agent_create_task():
     if agent_store.count_active(user) >= AgentConfig.MAX_ACTIVE_PER_USER:
         return fail("لديك مهمة قيد التشغيل الآن. انتظر انتهاءها أو ألغها.", 409, "agent_busy")
     mode = "demo" if AGENT_FAKE else ai_mode()
-    inline = agent_forces_inline()
-    serverless = bool(os.environ.get("VERCEL"))
+    policy = execution_policy()
     model = (AgentConfig.MODEL or PROVIDERS[provider]["model"]) if not AGENT_FAKE else "waha-demo"
-    inline_config = None
-    if inline:
-        # A request-bound agent has to finish before the platform does: shorter
-        # loop, fewer calls, tighter provider timeout, earlier DB deadline.
-        inline_config = _InlineLimits(
-            AgentConfig,
-            MAX_STEPS=min(1 if serverless else 2, AgentConfig.MAX_STEPS),
-            MAX_AI_CALLS=min(3 if serverless else 4, AgentConfig.MAX_AI_CALLS),
-            PROVIDER_TIMEOUT_SECONDS=min(25, AgentConfig.PROVIDER_TIMEOUT_SECONDS) if serverless
-            else AgentConfig.PROVIDER_TIMEOUT_SECONDS,
-            DEADLINE_SECONDS=min(45, AgentConfig.DEADLINE_SECONDS) if serverless
-            else AgentConfig.DEADLINE_SECONDS)
-    task_id = agent_store.create_task(
-        user, goal, provider, model,
-        now + (inline_config or AgentConfig).DEADLINE_SECONDS, agent_client_key())
-    if inline:
-        agent = Agent(AgentDeps(store=agent_store, config=inline_config, tools=agent_tools,
-                                provider_factory=lambda task=None: agent_provider(
-                                    task=task,
-                                    visitor_token=None if serverless else g.visitor["token"],
-                                    timeout=inline_config.PROVIDER_TIMEOUT_SECONDS),
-                                skills=SKILLS,
-                                limits={"user_ai_per_hour": USER_AI_LIMIT_PER_HOUR,
-                                        "ip_ai_per_hour": IP_AI_LIMIT_PER_HOUR},
-                                hooks={"record_cooldown": agent_record_cooldown}, inline=True,
-                                rag_index_dir=RAG_INDEX_DIR))
-        task = agent.run(task_id) or agent_store.get_task(task_id, user)
-        return jsonify(task=task, mode="inline"), 201
+    # A request-bound task has to finish before the platform freezes it, so the loop's
+    # budgets arrive capped -- by policy, not by an `if` in this handler.
+    task_id = agent_store.create_task(user, goal, provider, model,
+                                      now + policy.config.DEADLINE_SECONDS, agent_client_key())
+    if policy.is_inline:
+        service = Service.for_request(AgentDeps(**agent_deps(
+            visitor_token=g.visitor["token"] if policy.uses_request_visitor_token else None,
+            policy=policy)), policy)
+        task = service.execute_inline(task_id) or agent_store.get_task(task_id, user)
+        return jsonify(task=task, mode=policy.mode, execution=policy.describe()), 201
     agent_service.submit(task_id)
     task = agent_store.get_task(task_id, user)
-    return jsonify(task=task, mode="queued",
-                   poll="./api/agent/tasks/" + task_id,
+    return jsonify(task=task, mode=policy.mode, poll="./api/agent/tasks/" + task_id,
                    stream="./api/agent/tasks/" + task_id + "/stream"), 201
 
 

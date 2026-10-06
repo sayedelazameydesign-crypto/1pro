@@ -36,6 +36,7 @@ for _key in ("GEMINI_API_KEY", "AGENT_NETWORK_TOOLS", "AGENT_APPROVAL_TIMEOUT_SE
              "AGENT_MAX_STEPS", "AGENT_EVENT_RETENTION_SECONDS", "WAHA_DB"):
     os.environ.pop(_key, None)
 
+from agent import execution as agent_execution    # noqa: E402
 from agent.providers import FakeProvider, Result  # noqa: E402
 
 ORIGIN = "https://pages.test"
@@ -61,6 +62,15 @@ def final(text):
 
 class AgentCase(unittest.TestCase):
     def setUp(self):
+        # `AGENT_NETWORK_TOOLS=1` above is only honoured if this file is the first module
+        # to import agent.config, because AgentConfig reads the environment once at import
+        # time -- and which sibling module gets imported first is an accident of test
+        # discovery. Patch the attribute instead, so "web_fetch exists" is a property of
+        # this test, not of the run order. (The same trap is why test_agent_execution
+        # passes its own config class rather than trusting the ambient one.)
+        network = patch.object(backend.AgentConfig, "NETWORK_TOOLS", True)
+        network.start()
+        self.addCleanup(network.stop)
         self.client = backend.app.test_client()
         self.user = "u_" + os.urandom(10).hex()
         self.fake = None
@@ -393,9 +403,13 @@ class AgentCase(unittest.TestCase):
             # background worker is involved in the assertion.
             task_id = backend.agent_store.create_task(self.user, "هدف يكفي لطول الطلب",
                                                        "gemini", "model", time.time() + 60)
-            deps = backend.agent_deps(inline=True)
+            policy = agent_execution.ExecutionPolicy(agent_execution.INLINE,
+                                                    config=backend.AgentConfig)
+            deps = backend.agent_deps(policy=policy)
             deps["hooks"]["record_cooldown"] = record
-            task = backend.Agent(backend.AgentDeps(**{k: v for k, v in deps.items() if k != "inline"})).run(task_id)
+            # R6: the request-bound path goes through the same Service the route uses,
+            # so this asserts the real inline contract, not a hand-assembled Agent.
+            task = backend.Service.for_request(backend.AgentDeps(**deps), policy).execute_inline(task_id)
         self.assertEqual(task["status"], "failed")
         self.assertEqual(task["error_code"], "ai_rate_limit")
         self.assertEqual(seen["retry_after"], 42)
@@ -448,7 +462,9 @@ class AgentCase(unittest.TestCase):
     def test_config_and_me_advertise_the_runtime(self):
         config = self.client.get("/api/agent/config", headers={"Origin": ORIGIN}).get_json()
         self.assertTrue(config["enabled"])
-        self.assertEqual(config["limits"]["max_steps"], 3)
+        self.assertEqual(config["limits"]["max_steps"], backend.AgentConfig.MAX_STEPS,
+                         "the advertised ceiling must be the enforced one, whatever the "
+                         "environment froze at import")
         names = [tool["name"] for tool in config["tools"]]
         self.assertIn("web_fetch", names)
         self.assertTrue(next(tool for tool in config["tools"] if tool["name"] == "web_fetch")["requires_approval"])

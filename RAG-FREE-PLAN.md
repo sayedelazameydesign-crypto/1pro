@@ -1,6 +1,6 @@
 # خطة الاستفادة المجانية من NVIDIA rag-blueprint (ونظامك الحالي)
 
-**الحالة:** ورقة قرار · 2026-10-06 · **R1→R4 مُنفَّذة** (R1: 38 · R2: 29 + 15 فحص عقد متصفح · R3: 23 + مساران في الحلقة · R4: 14 + 7 self-test) · **R5 خلف بوابة محسوبة وقد بقيت مغلقة** (`recall@5 = 0.9375 ≥ 0.80`) · كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر. كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر.
+**الحالة:** ورقة قرار · 2026-10-06 · **R1→R4 وR6 مُنفَّذة** و**R5 مُقفَلة بالقياس** (`recall@5 = 0.9375 ≥ 0.80`) · كل رقم هنا مأخوذ من مستودعك أو من وثائق NVIDIA، لا من تقدير حر. أرقام الاختبارات في الجدول أدناه مولَّدة من الملفات نفسها ويفحصها `tests/test_docs_match_code.py`.
 
 > **ملاحظة ترتيب:** التعديل المعتمد — **R4 يأتي فور R2/R3 لا بعدهما بمدة** — مُثبَّت في الجدول أدناه. والسبب عملي: دون `recall@5` مقيس، لا فرق بين «الاسترجاع يعمل» و«يبدو أنه يعمل». كما أن `R6` لم يعد «ثلاثة متغيرات وننتهي»: صار وضع نشر بعقد اختبار يمنع التفرّع حسب المُولَّد.
 
@@ -102,10 +102,10 @@ scripts/rag_eval.py     ← recall@5 · precision@1 · no-answer-rate · citatio
 | **R0** | قرار + توثيق (هذه الورقة، مع `ATTRIBUTION.md`) | `RAG-FREE-PLAN.md` | CI أخضر، لا كود | دائمًا |
 | **R1** ✅ | **تم**: `scripts/rag_index.py` يبني `data/rag/{corpus.jsonl,index.json,manifest.json,stats.json}` — تقطيع على حدود الفقرات/الجُمل + SHA-256 dedup + فهرس معجمي جاهز لـ BM25، **بلا أي استدعاء شبكة** | `scripts/rag_index.py`, `tests/test_rag_index.py`, `data/rag/*` | 18 قسمًا → 18 مقطعًا · `vocab=196` · `postings=240` · بناءان متتاليان = نفس البايتات · CI يفشل لو اختلفت المخرجات المُودَعة | منجز |
 | **R2** ✅ | **تم**: `backend/rag_search.py` يستهلك `data/rag/index.json` **كما هو** (لا مخطط موازٍ، لا إعادة توليد) بـBM25 فوق `postings` القائمة + وزن للقسم داخل التراكم + طيّ للاستعلام وبنية `stem_forms` نفسها؛ `GET /api/search?q=` هو المستهلك الوحيد للفهرس؛ المتصفح يسمّي مصدره: `RAG_LOCAL` أو `BROWSER_FALLBACK` أو `بلا مصدر` | `backend/rag_search.py`, `backend/rag_text.py`, `backend/app.py`, `docs/assets/search.js`, `tests/test_rag_search.py`, `tests/browser_search.test.mjs` | `بريد` → `SKL005#prompt` عند **2.778** ثم `starter` عند 1.185 (التلوّث انكسر) · سؤال محادثي → `prompt` يسبق `starter` · خارج الكتالوج → **0 نتيجة** و`max_score=0.0` · الاستشهاد يُقرأ راجعًا إلى `corpus.jsonl` حرفيًا · 5 استدعاءات متطابقة = نفس البايتات · بلا فهرس → **503** لا نجاح وهمي | الآن |
-| **R3** ✅ | **تم**: `kb_search` داخل `backend/agent/tools.py` — نافذة رفيعة على R2 لا مسترجِعًا ثانيًا: تستدعي `rag_search.search()` وتمرّر `citation`/`chunk_id` حرفيًا، بسقف 5 نتائج و3000 حرف أدلة للفة النموذج التالية، وبلا موافقة (اقرأ-فقط) وبلا شبكة وبلا DB | `backend/agent/tools.py`, `backend/agent/runtime.py` (حقن `rag_index_dir`), `tests/test_agent_kb_search.py`, `tests/test_agent_runtime.py` | 23 فحصًا محليًا + مساران داخل حلقة الوكيل الحقيقية؛ دليل نصّي (AST بلا docstrings) bahwa لا `postings`/`idf`/`content_terms`/`corpus.jsonl` داخل `tools.py`؛ فهرس مفقود → `ToolError` لا `results: []` | الآن |
+| **R3** ✅ | **تم**: `kb_search` داخل `backend/agent/tools.py` — نافذة رفيعة على R2 لا مسترجِعًا ثانيًا: تستدعي `rag_search.search()` وتمرّر `citation`/`chunk_id` حرفيًا، بسقف 5 نتائج و3000 حرف أدلة للفة النموذج التالية، وبلا موافقة (اقرأ-فقط) وبلا شبكة وبلا DB | `backend/agent/tools.py`, `backend/agent/runtime.py` (حقن `rag_index_dir`), `tests/test_agent_kb_search.py`, `tests/test_agent_runtime.py` | 23 فحصًا محليًا + مساران داخل حلقة الوكيل الحقيقية؛ دليل نصّي (AST بلا docstrings) بأنّه لا `postings`/`idf`/`content_terms`/`corpus.jsonl` داخل `tools.py`؛ فهرس مفقود → `ToolError` لا `results: []` | الآن |
 | **R4** ✅ | **تم**: `eval/train.json` (22 حالة: 16 قابلة للإجابة، 5 «لا إجابة»، 1 advisory) + `scripts/rag_eval.py` يقرأ عبر `rag_search.search()` نفسها ويكتب `data/rag/eval-report.json` — و`--check` في CI يقارن البايتات ويفشل على الانحراف | `eval/train.json`, `scripts/rag_eval.py`, `data/rag/eval-report.json`, `tests/test_rag_eval.py` | `recall@5 = 0.9375` · `precision@1 = 0.9375` · `no-answer = 1.0` · `false-answer = 0.0` · `citation = 1.0` · `dupes = 0.0` — والفجوتان Known مسجّلتان بالـid لا بحذف السؤال | منجَز |
 | **R5** | متجهات + إعادة ترتيب: `embedding halfvec(1024)` من `nv-embedqa-e5-v5` يبنيها السكربت **محليًا**، فهرس IVFFlat، `AGENT_RAG_RERANK=0/1` (rerieur على `/v1/rerank` بنقاطك محليًا) | migration + سكربت + مفتاحان محليان | حفظ 1,000 نقطة محذوفة: `--dry-run` يطبع عدد الطلبات قبل التنفيذ؛ لا `NVIDIA_API_KEY` في Render/Vercel | **فقط** عند >~200KB أو >50 مهارة أو أول PDF |
-| **R6** | وضع Serverless **بلا تفرّع في النواة**: السقف يُرفع بالعدد فقط (`AGENT_SERVERLESS_AI_CALLS=6 AGENT_SERVERLESS_MAX_STEPS=4 AGENT_SERVERLESS_PROVIDER_TIMEOUT_SECONDS=22`)، و**عقد اختبار** يثبت أن نفس المسار يخدم Render وVercel بلا `if provider ==` في النواة | env + اختبار عقد | `deploy_doctor.py --target vercel` لا يشتكي · p95 < 25s · اختبار واحد يفشل لو ظهر فرع خاص بوضع النشر | أخيرًا |
+| **R6** ✅ | **تم**: `backend/agent/execution.py` يملك `ExecutionMode` (queued/inline) و`SERVERLESS_CAPS`، و`app.py` هو القارئ الوحيد لـ`VERCEL`، و`Service(mode=…)` هو الفرق — لا متغيرات `AGENT_SERVERLESS_*`، ولا فرع مضيف في `backend/agent/` | `backend/agent/execution.py`, `backend/agent/service.py`, `backend/app.py`, `tests/test_agent_execution.py`, `tests/test_agent_no_platform_branching.py`, `tests/test_docs_match_code.py` | نفس السيناريو على المسارين ⇒ خطة/خطوات/نتائج أدوات/حالة/أحداث/تقرير **متطابقة حقلًا حقلًا**؛ `submit()` على Serverless يرفض؛ `429` بلا fallback؛ 45s < `maxDuration` 60 | منجَز |
 
 **ما لن نفعله (مرفوض صراحة، موثّق لا مسكوت عنه):**
 حاويات/Helm/Milvus/Elasticsearch/SeaweedFS/MinIO · استيراد `nvidia_rag` داخل التطبيق (109 حزمة ضد 512MB) · مفتاح NVIDIA مشترك يوزَّع على الزوّار · `WAHA_TRUST_PROMPTQL=1` · وعد باستخدام غير محدود · تضمين في زمن الطلب قبل R5 · نسخ نصوص skills كاملة قبل حسم الترخيص · تشغيل `rag-perf` على بنية مجانية.
@@ -145,7 +145,7 @@ recall@5 = 0.89   precision@1 = 0.89   أسئلة خارج الكتالوج: 2 �
 
 نتيجتان تثبتان أن الفهرس صالح للاستعمال، وثلاثة أخطاء موثّقة يجب أن تُعالَج في R2/R4 — **لا في R1**:
 
-1. **`starter` يلوّث الترتيب.** 6 من 9 نتائج أولى جاءت من مقاطع `starter`، لأن هذه الحقول تحمل عبارات محادثة عامة (`اشرح لي`, `ساعدني`, `أريد`). **مُنفَّذ في R2 كما خُطِّط:** وزن لكل قسم داخل تراكم الدرجة (`prompt`/`description` 1.15، `starter` 0.85)، وعبارات توقّف محادثية تُطبَّق على الاستعلام وحده؛ المقاطع لم تُحذف من الفهرس.
+1. **`starter` يلوّث الترتيب.** 6 من 9 نتائج أولى جاءت من مقاطع `starter`، لأن هذه الحقول تحمل عبارات محادثة عامة (`اشرح لي`, `ساعدني`, `أريد`). **مُنفَّذ في R2 كما خُطِّط:** وزن لكل قسم داخل تراكم الدرجة (`prompt` 1.15، `description` 1.0، `starter` 0.55)، وعبارات توقّف محادثية تُطبَّق على الاستعلام وحده؛ المقاطع لم تُحذف من الفهرس.
 2. **الكتابة اللاتينية ≠ تعريب.** «بايثون» لا تلتقي بـ`Python` الموجود في المصدر: الخطأ الوحيد في التسعة. **باقٍ في R4** كما قرّرنا: R2 لا يبتكر جدول تعريب؛ الفجوة مُثبَّتة كاختبار (`بايثون` → 0 نتيجة) حتى يُقاس مكسبها.
 3. **لا حدّ أمان للاسكور.** الثالثة خارج الكتالوج («طبخ الكبة») رجعت بـ`SKL002#starter` عند 5.347 لأن «اشرح لي» حرفية في المثال. **مُعالَج في R2 برفض القرار نفسه:** لا عتبة إطلاقًا في R2؛ الاستجابة تحمل `no_answer.decision` (deferred/unsearchable) مع `max_score` والدرجات، ومنه `eval-report.json` وحده يملك عتبة الإجابة.
 
@@ -227,6 +227,118 @@ lexical_recall_at5=0.9375 (الحد 0.80، مقيس الآن في §3.4)
 
 ---
 
+## 3.5) ما ثبت من R6 (الوضع لا يغيّر المعنى)
+
+**مقياس القبول لم يكن «هل يعمل على Vercel»** — كان يعمل. المقياس: **هل يتصرّف Vercel مثل
+Render في كل ما يراه الزائر إلا الزمن؟** هذا هو الفرق بين طبقة نشر حقيقية وطريقة ثانية
+للفشل.
+
+**البنية كما صُرِّح بها:**
+
+```text
+app.py  ->  execution_policy()  ->  ExecutionMode {queued | inline}  ->  Service(mode=…)  ->  Agent.run()
+```
+
+- `backend/agent/execution.py` (جديد، نقيّ، لا `os`): `resolve(ai_mode=…, serverless=…, config=…)`
+  هو **سطح التفرّع كله**. يختار الوضع ويشتقّ الميزانية بـ`min()` على المكابس العامة،
+  ويجيب عن سؤالين فقط: هل تنتظر موافقة؟ وهل يحمل الطلب توكن الزائر؟
+- `VERCEL` يُقرأ في دالتين فقط في المستودع: `execution_policy()` (قرار) و`WRITABLE_ROOT`
+  (حقيقة نظام ملفات) — يفحصه AST: `test_exactly_one_function_reads_vercel` و
+  `test_the_module_level_host_read_is_a_path_and_nothing_else`.
+- داخل `backend/agent/`: **لا** `environ` إطلاقًا (عدا `config.py` وباسم `AGENT_*` فقط)،
+  **لا** مقارنة باسم مضيف، و`runtime.py` لا يرى الوضع إلا كـ`deps.inline`.
+  الحارس حتى يرفض أن تتوسّع البوابة: `resolve()` توقيعه `{ai_mode, serverless, config}` بالضبط،
+  و`sandbox` المضيف في `execution.py` مسموح **في `resolve()` وحدها**.
+
+**لا `AGENT_SERVERLESS_*`.** القرار كما ثبّتّه: السقوف `INLINE_CAPS`/`SERVERLESS_CAPS`
+أرقام **داخل السياسة** تُطبَّق `min()` على `AGENT_MAX_STEPS`/`AGENT_MAX_AI_CALLS`/
+`AGENT_TASK_DEADLINE_SECONDS`/`AGENT_PROVIDER_TIMEOUT_SECONDS`. لا يُضاف مكبس إلا حين
+يُثبت اختبار أن `inline` يحتاج رقمًا لا تستطيع `queued` وصفه — لم يثبته أحد. ولهذا
+`describe()` يحمل `new_knobs: 0`، و`test_no_serverless_knobs_were_invented` يفشل لو ظهر
+`SERVERLESS` في `config.py`.
+
+**المصفوفة المطلوبة، كلها مُنفَّذة** (`tests/test_agent_execution.py`، 14 فحصًا، `Store` حقيقي
+على SQLite مؤقت و`FakeProvider` وحده مُبدَّل):
+
+| السيناريو | الوضع | النتيجة المُختبَرة |
+|---|---|---|
+| Render مستقل | `queued` | مكتمل، 6 استدعاءات نموذج، `caps_applied = {}` |
+| Vercel | `inline` | حالة طرفية **داخل الطلب**، خطوة واحدة لأن السقف 1 |
+| PromptQL | `inline` | `uses_request_visitor_token = True`، بلا سقف 45s |
+| أداة تحتاج موافقة في `inline` | `inline` | `rejected` والسجل **لم يُنفَّذ** (`self.ran == []`) |
+| نفس الأداة في `queued` | `queued` | `awaiting_approval` → `denied` عند الرفض، ولم تُنفَّذ |
+| تجاوز الميزانية | الوضعان | `failed` + `error_code="ai_budget"`، و`active=false` (دوّار ولا واحد) |
+| `429` من المزوّد | الوضعان | `failed` + `ai_rate_limit`، **`provider_calls == 1`**، cooldown مرة واحدة، لا بديل |
+| نفس السيناريو في الوضعين | — | **`plan`/`steps`/`calls`/`status`/`events`/`report`/`usage` متطابقة حقلًا حقلًا** |
+
+وفوقها ما لا يُرى في الاختبارات الوحدوية: `submit()` على خدمة `inline` **يرفض** بدل أن يُسجّل
+مهمة لا يقرأها أحد («أنجح» شكل من أشكال الدوّار)، و`start()` لا يبني مجموعة عمل، و`bootstrap()`
+يبلّغ `workers: 0`، وانهيار خيط داخل `execute_inline` يُنهى المهمة بـ`worker_error` بدل 500
+يترك الصف `running` إلى الأبد.
+
+**عقد بايتاتي إضافي:** `SERVERLESS_CAPS["DEADLINE_SECONDS"] = 45 < maxDuration = 60` في
+`vercel.json` — يُقرأ الرقمان من الملفّين ويُختبَر أن أحدهما داخل الآخر
+(`test_serverless_budget_fits_vercels_declared_ceiling`)، لأن سقف المنصة رقم في ملف إعداد
+والآخر رقم في بايثون، ولا شيء غير اختبار يربطهما.
+
+**الدليل من سيرفرَين حقيقيَين، لا من الاختبارات وحدها:** نفس الكود شُغِّل مرّتين — `:8090`
+بلا `VERCEL` (queued) و`:8091` مع `VERCEL=1` (inline) — وأُرسل نفس الهدف عبر `POST
+/api/agent/tasks` بسكربت `AGENT_FAKE` نفسه، مع `X-Forwarded-For` منفصل لكل طرف حتى لا
+تخطف حدود الساعة المشتركة أحدهما من الآخر:
+
+| ما قُورن | النتيجة |
+|---|---|
+| حالة الرد | `201` و`mode: "queued"` / `mode: "inline"` |
+| مفتاحات `task` | **مجموعة الحقول متطابقة تمامًا** |
+| سجلّ الخطوة الأولى | **متطابق حرفيًا** (`detail`/`idx`/`output`/`status`/`title`) |
+| أول صفّ أداة | **متطابق حرفيًا** بعد إسقاط `id` الصف: `{"tool":"calculator","status":"done","result":{"expression":"(12+18+24)/3","result":18.0}}` |
+| أول عنصر خطة | متطابق |
+| تدفّق الأحداث | **8 من 9 متطابقة بالتسلسل**؛ ثم يختلف عند **نقطة الميزانية**: queued يُكمل `step.queued/step.running/tool.pending/artifact.saved`، وinline ينهي بـ`task.completed` |
+| `ai_calls` / عدد الخطوات | 6 و2 مقابل 3 و1 — وهما بالضبط `INLINE_CAPS`/`SERVERLESS_CAPS` |
+| `pending_call` | `None` في الطرفين (لا تعليق بانتظار موافقة في أيٍّ منهما) |
+| `/health` | `execution.workers_started: false` على المضيف الذي لا طابور له، مع `workers: 1` في العدّاد المعلن |
+
+**وهذا هو معيار القبول كما صيغ:** لا يُقال «يعمل على Vercel»، بل «**Vercel لا يغيّر معنى
+النظام**» — ما تغيّر هو طول المهمة المسموح بها فقط، والانحراف يقع حيث تنتهي الميزانية لا
+حيث يبدأ المنطق.
+
+**عيب ترتيب كشفه R6 وصُحِّح:** `test_agent_runtime.py` كان يعتمد على أن يكون **أول** مستورد
+لـ`agent.config` حتى يجمّد `AGENT_MAX_STEPS=3` و`AGENT_NETWORK_TOOLS=1`. بمجرد أن أضافت R6
+ملف اختبار يقرأ `agent.config` قبلهalphabetically، انقلبت 3 فحوص. الصلة ليست «اختبار سيئ»:
+التبعية لترتيب الاستيراد هي نفسها تفرّع خفيّ في طبقة الاختبار. الصواب أنه **لا اختبار يعتمد
+على قيمة مجمّدة من ترتيب التشغيل** — فصار `NETWORK_TOOLS` بضربة `patch.object` على الكائن،
+وصار رقم الـconfig يُقارن بـ`backend.AgentConfig.MAX_STEPS` بدل 3 مكتوبة. ملف R6 يمرّر
+كائن `Conf` خاصًا به (subclass حقيقي لـ`AgentConfig`) فلا يجمّد شيئًا لغيره.
+
+**ما لم يفعله R6 (بحدوده):** لا مزوّد جديد، لا `AGENT_SERVERLESS_*`، لا تصغير `k` ولا لمس
+`RAG-FREE-PLAN` لمعايرة R2، لا `browser`/`shell`/تنفيذ كود/OAuth/كتابة GitHub، لا R5.
+`corpus.jsonl` و`index.json` لم يُمسّا، ولا سطر واحد في `rag_search.py` أو `rag_index.py`.
+
+### أرقام الاختبارات (مولَّدة من الملفات، لا من الذاكرة)
+
+يقرأها `tests/test_docs_match_code.py::GeneratedTestCounts`: لو أُضيف ملف اختبار ولم يُدرَج
+هنا، أو تحرّك عددٌ ولم تُحدَّث الجدول، يفشل CI. هذا بالضبط ما جعل «103 اختبارًا» تعيش في وصف
+PR بعد أن صار العدد ضعفه.
+
+| الملف | `def test_` |
+|---|---|
+| `tests/test_agent_core.py` | 25 |
+| `tests/test_agent_execution.py` | 14 |
+| `tests/test_agent_kb_search.py` | 23 |
+| `tests/test_agent_no_platform_branching.py` | 14 |
+| `tests/test_agent_runtime.py` | 25 |
+| `tests/test_deploy_doctor.py` | 17 |
+| `tests/test_docs_match_code.py` | 10 |
+| `tests/test_nvidia.py` | 13 |
+| `tests/test_rag_eval.py` | 14 |
+| `tests/test_rag_index.py` | 38 |
+| `tests/test_rag_search.py` | 29 |
+| `tests/test_vercel_wrapper.py` | 3 |
+| `tests/test_waha.py` | 23 |
+| **المجموع** | **248** |
+
+فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
+فحص `--self-test` لحساب المقاييس في R4: 7 فحوص (لا تُحتسب أعلاه؛ ليست `tests/test_*.py`).
 ## 4) كلفة المجانية، بالأرقام الصريحة
 
 - **النقطة 1,000 تكفيك للبناء لا للتشغيل:** تضمين كتالوج اليوم = ~3 طلبات؛ تقييم = ~100؛ هامش تجريبي = مقبول. **لو استُخدمت للتشغيل العام:** ~14 طلبًا/دقيقة فعليًا (سقف 40 RPM لكل نموذج)، و1,000 نقطة = ~1,000 استدعاء ثم **402/429 بلا مسار رسمي لزيادة المجاني**. من هنا: التشغيل على Gemini المجاني/بوصلتك، وNVIDIA للنقر محليًا.

@@ -133,7 +133,9 @@ class Delegation(unittest.TestCase):
     def test_endpoint_and_agent_read_one_index_directory(self):
         # The agent gets the path from the app, not from its own os.environ read.
         self.assertIn('"rag_index_dir": RAG_INDEX_DIR', APP_SOURCE)
-        self.assertIn("rag_index_dir=RAG_INDEX_DIR", APP_SOURCE)
+        self.assertEqual(APP_SOURCE.count('"rag_index_dir"'), 1,
+                         "R6: one deps builder -- with a second, hand-built one the two "
+                         "modes could each resolve their own index and agree on nothing")
         self.assertNotIn('os.environ.get("WAHA_RAG_DIR")', TOOLS_SOURCE)
         self.assertNotIn("RAG_INDEX_DIR", TOOLS_SOURCE, "the tool never resolves the path itself")
 

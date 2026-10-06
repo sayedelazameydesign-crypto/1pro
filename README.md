@@ -56,6 +56,12 @@ python -m http.server 8080 --directory docs
 ## الاختبارات
 
 ```bash
+python scripts/rag_index.py --check      # artifacts R1 مطابقة للبايت لما في المستودع
+python scripts/rag_eval.py --check       # قياس R4 مطابقة، والبوابة تقرأ نفس الرقم
+```
+
+
+```bash
 python -m venv .venv
 # Linux / macOS:
 . .venv/bin/activate
@@ -112,7 +118,9 @@ git push -u origin main
 
 `backend/rag_search.py` يقرأ `data/rag/` كما هو — لا مخطط موازٍ، لا إعادة توليد، لا
 استدعاء شبكة ولا قاعدة بيانات في مسار البحث. BM25 فوق `postings` المودَعة، بوزن للقسم
-داخل التراكم (`prompt`/`description` 1.15 مقابل `starter` 0.85) وعبارات إيقافية تُطبَّق
+داخل التراكم (`prompt` 1.15، `description` 1.0، `starter` 0.55 — القيم الثلاث في
+`rag_search.SECTION_WEIGHTS`، وأي رقم في هذا الملف يخالفها يفشله `tests/test_docs_match_code.py`)
+وعبارات إيقافية تُطبَّق
 على الاستعلام وحده. قواعد الطيّ نفسها في `backend/rag_text.py` يستوردها R1 وR2 معًا، لأن
 نسخة ثانية من المجزّئ كانت ستختلف عن `postings` بصمت.
 
@@ -175,6 +183,30 @@ git push -u origin main
 | `AGENT_MEMORY_MAX_ITEMS` | 40 | ذاكرة لكل زائر، تُقرأ آخر 8 كسياق |
 | `AGENT_MODEL` | من `runtime-config.json` | تجاوز نموذج الوكيل وحده |
 | `AGENT_FAKE` | 0 | `1` بلا `GEMINI_API_KEY`: ردود ثابتة لتجربة الواجهة والـsmoke، لا نموذج ولا شبكة |
+
+### وضع التنفيذ (R6): نفس الوكيل، جدولتان
+
+`backend/agent/execution.py` هو المكان الوحيد الذي يترجم شكل النشر إلى قرار:
+
+```text
+app.py  ->  execution_policy()  ->  ExecutionMode  ->  Service(mode=...)  ->  Agent.run()
+                                                        ├── queued  (Render: عامل في الخلفية)
+                                                        └── inline  (Vercel / PromptQL: داخل الطلب)
+```
+
+الوكيل نفسه **لا يعرف أن Vercel موجود**: لا `os.environ` في `backend/agent/` سوى طبقة
+الأعداد (باسم `AGENT_*` فقط)، ولا مقارنة باسم مضيف في أي موضع — يفحص ذلك
+`tests/test_agent_no_platform_branching.py` على AST. الفارق المسموح الوحيد هو **الميزانية
+والجدولة**: `inline` يُلغي سقفًا على `AGENT_MAX_STEPS`/`AGENT_MAX_AI_CALLS`/
+`AGENT_TASK_DEADLINE_SECONDS`/`AGENT_PROVIDER_TIMEOUT_SECONDS` بـ`min()` (الأقل يفوز، لذا
+`AGENT_MAX_STEPS=1` لا يُعاقَب)، ويرفض الأدوات التي تحتاج موافقة، ولا يقبل مهمة في الطابور.
+**لم تُضف أي متغيرات `AGENT_SERVERLESS_*`**: العقد الحالي يعبّر عن الوضع بالحدود الموجودة.
+
+الدليل `tests/test_agent_execution.py`: نفس نص السيناريو المُشغَّل على `FakeProvider` يمر
+بالمسارين، والخطة والخطوات ونتائج الأدوات والحالة والأحداث والتقرير **متطابقة حقلًا حقلًا**
+(يُستثنى الزمن ومعرّفات الصفوف). ومهمّة تتجاوز الميزانية تُنهى `failed` برمز خطأ واضح في
+الوضعين، و`429` يفشل بلا تحويل إلى مزوّد آخر، و`submit()` على مضيف Serverless يرفض بدل أن
+يُنتج دوّارًا لا ينتهي أبدًا.
 
 ### جرّبها محلياً بلا مفاتيح
 
@@ -278,7 +310,10 @@ Vercel؛ المشروع التجاري يتطلب Pro.
 
 - **مهام الوكيل تُنفَّذ داخل الطلب**: لا شيء يستمر بعد إرسال الرد على Serverless، لذلك
   يفرض `VERCEL=1` وضع `mode: inline` بسقف خطوة واحدة و45 ثانية و3 استدعاءات نموذج
-  (تُرفض الأدوات التي تحتاج موافقة). المهام الأطول تحتاج Render.
+  (تُرفض الأدوات التي تحتاج موافقة). الأرقام ليست في `app.py` بل في
+  `SERVERLESS_CAPS` داخل `backend/agent/execution.py`، و`DEADLINE_SECONDS` (45) أقل من
+  `maxDuration` (60) عمداً — تختبر ذلك `test_serverless_budget_fits_vercels_declared_ceiling`.
+  المهام الأطول تحتاج Render؛ لا متغير `AGENT_SERVERLESS_*`.
 - **`maxDuration: 60`**: هذا السقف مضمون على Hobby. القيمة 300 لا تُقبل إلا
   حيث يكون Fluid Compute مفعلاً، وقد تُرفض في المشاريع الأقدم.
 - **لا تجمع `builds` مع `functions`** في `vercel.json`: الاثنان متعارضان
