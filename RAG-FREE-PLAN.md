@@ -333,18 +333,26 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_components_contract.py` | 8 |
 | `tests/test_deploy_doctor.py` | 18 |
 | `tests/test_docs_match_code.py` | 11 |
+| `tests/test_integrations_api.py` | 32 |
+| `tests/test_integrations_core.py` | 46 |
+| `tests/test_integrations_live.py` | 6 |
 | `tests/test_nvidia.py` | 13 |
 | `tests/test_rag_eval.py` | 14 |
 | `tests/test_rag_index.py` | 38 |
 | `tests/test_rag_search.py` | 29 |
 | `tests/test_vercel_wrapper.py` | 5 |
 | `tests/test_waha.py` | 23 |
-| **المجموع** | **260** |
+| **المجموع** | **344** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
 فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
 إلا إذا وصلها payload من `/health` أو `/api/agent/config`، وأنّ ما لم يُقرأ يُكتب «غير معروف».
-فحص `--self-test` لحساب المقاييس في R4: 7 فحوص (لا تُحتسب أعلاه؛ ليست `tests/test_*.py`).## 4) كلفة المجانية، بالأرقام الصريحة
+فحص `--self-test` لحساب المقاييس في R4: 7 فحوص (لا تُحتسب أعلاه؛ ليست `tests/test_*.py`).
+فحص عقد صفحة التكاملات: 18 فحصًا (`node tests/browser_integrations.test.mjs`)، يثبّت أنّ بطاقة
+تكامل لا تخضرّ إلا إذا قال الخادم ذلك، وأنّ ما لم يُقرأ يُكتب «غير معروف» لا «غير مُهيّأ».
+فحص `--self-test` لمدقّق التكاملات الحيّ: 10 فحوص (`python scripts/integrations_live_check.py
+--self-test`)، بلا شبكة وبلا أسرار؛ يثبّت أنّ تشغيلًا لم يصل إلى أي API لا يُبلّغ عن نجاح،
+وأنّ ضبط نصف التكاملات لا يُسكت النصف المضبوط.## 4) كلفة المجانية، بالأرقام الصريحة
 
 - **النقطة 1,000 تكفيك للبناء لا للتشغيل:** تضمين كتالوج اليوم = ~3 طلبات؛ تقييم = ~100؛ هامش تجريبي = مقبول. **لو استُخدمت للتشغيل العام:** ~14 طلبًا/دقيقة فعليًا (سقف 40 RPM لكل نموذج)، و1,000 نقطة = ~1,000 استدعاء ثم **402/429 بلا مسار رسمي لزيادة المجاني**. من هنا: التشغيل على Gemini المجاني/بوصلتك، وNVIDIA للنقر محليًا.
 - **429 ليس خطرًا على مستودعك:** عندك `PROVIDER_COOLDOWN_SECONDS=900` + `provider_unavailable/provider_rate_limited` + رفض صريح بلا fallback صامت. أضِف فقط `nvidia_embedding_*` إلى نفس جدول الحدود إن شغّلت R5.

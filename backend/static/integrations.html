@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>واحة · تكاملات المالك</title>
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="stylesheet" href="/static/integrations.css">
+  <script src="/static/integrations.js" defer></script>
+  <script src="/static/integrations-ui.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div>
+      <div class="crumb">واحة / الإدارة</div>
+      <h1>تكاملات المالك</h1>
+    </div>
+    <div class="crumb"><a href="/">العودة إلى واحة</a></div>
+  </header>
+
+  <p class="notice">
+    هذه الصفحة للمالك فقط. المفاتيح (<code>GITHUB_*</code> · <code>VERCEL_*</code> ·
+    <code>DEPLOY_HOOK_*</code>) تبقى في الخادم ولا تصل إلى المتصفح إطلاقًا؛ ما يظهر هنا
+    هو حالة التكامل وسجلّاته فقط. الجلسة موقّعة وتنتهي بعد 8 ساعات، وعمليات الكتابة
+    محدودة بثلاث في الدقيقة وتتطلب نص تأكيد.
+  </p>
+
+  <section class="panel" id="auth-panel" hidden>
+    <form class="login" id="login-form">
+      <label for="owner-token">رمز المالك (WAHA_OWNER_TOKEN)</label>
+      <input id="owner-token" type="password" autocomplete="off" spellcheck="false" required>
+      <div class="mutation">
+        <button class="primary" type="submit">دخول</button>
+        <button type="button" id="sign-out">إنهاء الجلسة محليًا</button>
+      </div>
+      <p class="hint">الرمز يُرسل مرة واحدة عبر HTTPS ولا يُخزَّن إلا في ذاكرة هذه التبويبة.</p>
+    </form>
+  </section>
+
+  <section class="panel" id="status-panel" hidden>
+    <h2 style="margin-top:0;font-size:1rem">حالة التكاملات</h2>
+    <div class="cards" id="cards"></div>
+    <p class="hint" id="session-note"></p>
+  </section>
+
+  <section class="panel" id="github-panel" hidden>
+    <h2 style="margin-top:0;font-size:1rem">GitHub Actions</h2>
+    <div class="mutation">
+      <button type="button" id="refresh-runs">قراءة آخر التشغيلات</button>
+    </div>
+    <div id="runs-out"></div>
+    <div class="mutation" id="dispatch-box" hidden>
+      <div class="field">
+        <label for="dispatch-ref">الفرع (ref)</label>
+        <input id="dispatch-ref" type="text" value="main" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="dispatch-confirm">اكتب نص التأكيد</label>
+        <input id="dispatch-confirm" type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="primary" type="button" id="dispatch-run">تشغيل workflow</button>
+    </div>
+    <p class="hint" id="dispatch-hint"></p>
+    <pre class="out" id="github-log" hidden></pre>
+  </section>
+
+  <section class="panel" id="vercel-panel" hidden>
+    <h2 style="margin-top:0;font-size:1rem">Vercel</h2>
+    <div class="mutation">
+      <button type="button" id="refresh-deployments">قراءة آخر النشرات</button>
+    </div>
+    <div id="deployments-out"></div>
+    <div class="mutation" id="hook-box" hidden>
+      <div class="field">
+        <label for="deploy-confirm">اكتب نص التأكيد</label>
+        <input id="deploy-confirm" type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="primary" type="button" id="deploy-now">تشغيل Deploy Hook</button>
+    </div>
+    <p class="hint" id="hook-hint"></p>
+    <pre class="out" id="vercel-log" hidden></pre>
+  </section>
+
+  <footer class="foot">
+    كل حالة معروضة مشتقة من رد الخادم. ما لم يُقرأ يُكتب «غير معروف» ولا يُلَوَّن.
+  </footer>
+</div>
+</body>
+</html>

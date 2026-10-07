@@ -34,3 +34,16 @@ services:
         value: "5"
       - key: AGENT_TASK_DEADLINE_SECONDS
         value: "180"
+      # Owner integrations (backend/integrations/*, page at /integrations).
+      # Deliberately NOT declared as envVars: `sync: false` would make Render prompt
+      # for seven values on every blueprint deploy, and the surface degrades safely
+      # without them (every /api/owner/* call answers 503 not_configured rather than
+      # pretending to work). Add them by hand in the dashboard when you want the page
+      # live -- see README, "تكاملات المالك".
+      #   WAHA_OWNER_TOKEN      openssl rand -hex 32   (opens the page; server-only)
+      #   GITHUB_TOKEN          actions:read + actions:write for dispatch
+      #   GITHUB_REPO           owner/name
+      #   GITHUB_WORKFLOW_ID    e.g. ci.yml
+      #   VERCEL_TOKEN          read scope only
+      #   VERCEL_PROJECT_ID
+      #   DEPLOY_HOOK_URL       the URL *is* the deploy credential
