@@ -174,6 +174,30 @@ class SandboxRefused(RuntimeError):
         self.message = message
 
 
+def check_request(limits, code):
+    """The refusals that need no host: they are about the program, not the machine.
+
+    Kept as a free function so the *rule* -- an empty or oversized program is
+    refused by name before anything is spawned -- can be exercised on a machine
+    that forbids namespaces exactly as well as on one that allows them. A test of
+    this rule must not skip on the CI runner, because the rule has nothing to do
+    with the runner.
+
+    Note the precedence, which is deliberate: a runner that cannot build the
+    boundary refuses with its own code *before* these checks, since nothing is
+    going to run either way and the machine is the more urgent problem to report.
+    """
+    source = code or ""
+    encoded = source.encode("utf-8")
+    if not source.strip():
+        raise SandboxRefused("empty_program", "there is no program to run")
+    if len(encoded) > limits.max_input_bytes:
+        raise SandboxRefused(
+            "input_too_large",
+            f"the program is {len(encoded)} bytes, over the "
+            f"{limits.max_input_bytes}-byte limit")
+
+
 @dataclass(frozen=True)
 class Limits:
     """Ceilings requested for one run. The runner enforces them or refuses."""
@@ -269,15 +293,7 @@ class SandboxRunner:
 
     @staticmethod
     def _refuse_if_unusable(request):
-        source = request.code or ""
-        encoded = source.encode("utf-8")
-        if not source.strip():
-            raise SandboxRefused("empty_program", "there is no program to run")
-        if len(encoded) > request.limits.max_input_bytes:
-            raise SandboxRefused(
-                "input_too_large",
-                f"the program is {len(encoded)} bytes, over the "
-                f"{request.limits.max_input_bytes}-byte limit")
+        check_request(request.limits, request.code)
 
     def _finish(self, request, process, out, err, started, timed_out):
         limits = request.limits

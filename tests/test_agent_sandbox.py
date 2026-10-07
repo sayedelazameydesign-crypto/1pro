@@ -232,16 +232,39 @@ class TheRefusalPathFailsClosed(unittest.TestCase):
         self.assertEqual(counter["n"], 2)
         sandbox.reset_cache()
 
-    def test_an_oversized_program_is_refused_before_anything_runs(self):
+    def test_an_oversized_program_is_refused_by_name(self):
+        """The rule is about the program, not the machine, so it is tested here --
+        on the CI runner as well as on a developer's laptop. Putting it behind the
+        boundary's availability is how it silently stopped being tested on the one
+        machine that mattered."""
+        program = "x = 1  # " + "y" * 5000
         with self.assertRaises(sandbox.SandboxRefused) as caught:
-            RUNNER.run(sandbox.RunRequest(code="x = 1  # " + "y" * 5000,
-                                          limits=limits(inp=100)))
+            sandbox.check_request(limits(inp=100), program)
         self.assertEqual(caught.exception.code, "input_too_large")
+        # The message names the real size and the real cap; "too large" alone sends
+        # the reader to the code to find out by how much.
+        self.assertIn(str(len(program)), caught.exception.message)
 
     def test_an_empty_program_is_refused_rather_than_run(self):
+        for blank in ("", "   \n\t", "\n\n"):
+            with self.subTest(program=blank):
+                with self.assertRaises(sandbox.SandboxRefused) as caught:
+                    sandbox.check_request(limits(), blank)
+                self.assertEqual(caught.exception.code, "empty_program")
+
+    def test_a_program_that_fits_the_cap_passes_the_check(self):
+        """The guard must be a bound, not a wall: a program inside the cap is let
+        through to the runner."""
+        sandbox.check_request(limits(inp=4000), "print('x' * 100)")
+
+    def test_the_machine_refusal_wins_over_the_program_check(self):
+        """Deliberate precedence: with no boundary, nothing runs either way, so the
+        answer names the machine rather than the program. Stating it here keeps a
+        future reordering from silently changing which reason an operator sees."""
+        runner = sandbox.UnavailableRunner("no `unshare` on this machine")
         with self.assertRaises(sandbox.SandboxRefused) as caught:
-            RUNNER.run(sandbox.RunRequest(code="   \n\t", limits=limits()))
-        self.assertEqual(caught.exception.code, "empty_program")
+            runner.run(sandbox.RunRequest(code="", limits=limits()))
+        self.assertEqual(caught.exception.code, "sandbox_unavailable")
 
 
 class CodeExecIsOffAndGated(unittest.TestCase):
@@ -493,6 +516,16 @@ class TheBoundaryHoldsAgainstRealCode(unittest.TestCase):
         outcome = run_code("print('x' * 200000)", timeout=10, out=2000)
         self.assertTrue(outcome.truncated)
         self.assertLessEqual(len(outcome.stdout.encode("utf-8")), 2000)
+
+    def test_the_runner_itself_refuses_before_it_spawns_anything(self):
+        """Same rule, now through the boundary: nothing is forked for a program that
+        fails the size or emptiness check, so the refusal is cheap and exact."""
+        with self.assertRaises(sandbox.SandboxRefused) as caught:
+            run_code("x = 1  # " + "y" * 200000, inp=100)
+        self.assertEqual(caught.exception.code, "input_too_large")
+        with self.assertRaises(sandbox.SandboxRefused) as caught:
+            run_code("   \n")
+        self.assertEqual(caught.exception.code, "empty_program")
 
     def test_a_failing_program_returns_data_instead_of_raising(self):
         """The loop must survive it: the exception is the program's, not the runner's."""

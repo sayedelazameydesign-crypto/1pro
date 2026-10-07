@@ -46,7 +46,32 @@ jobs:
               print("=> those tests will SKIP; execution refuses here by design")
               print("   reason:", getattr(runner, "reason", "incomplete boundary"))
           PY
-      - run: python -m unittest discover -s tests -v
+      # The suite runs exactly as before; what changes is what happens when it
+      # fails. This repository has already paid for the lesson that a red job whose
+      # reason lives only in a downloadable log is a red job nobody can act on, so
+      # each failure is echoed as an annotation -- which is readable through the
+      # API and shown on the pull request -- while the full output stays in the log
+      # for the human who wants the traceback.
+      - name: Run the suite, and say why when it fails
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run(
+              [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+              capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          if result.returncode:
+              print(output[-8000:])
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:8]:
+                  headline, _, body = block.partition("\n")
+                  detail = " ".join(body.split())[:900]
+                  print(f"::error title={headline}::{detail}")
+          else:
+              print(output[-2000:])
+          sys.exit(result.returncode)
+          PY
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
       - run: node tests/browser_answer.test.mjs
@@ -126,7 +151,32 @@ jobs:
               print("=> those tests will SKIP; execution refuses here by design")
               print("   reason:", getattr(runner, "reason", "incomplete boundary"))
           PY
-      - run: python -m unittest discover -s tests -v
+      # The suite runs exactly as before; what changes is what happens when it
+      # fails. This repository has already paid for the lesson that a red job whose
+      # reason lives only in a downloadable log is a red job nobody can act on, so
+      # each failure is echoed as an annotation -- which is readable through the
+      # API and shown on the pull request -- while the full output stays in the log
+      # for the human who wants the traceback.
+      - name: Run the suite, and say why when it fails
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run(
+              [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+              capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          if result.returncode:
+              print(output[-8000:])
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:8]:
+                  headline, _, body = block.partition("\n")
+                  detail = " ".join(body.split())[:900]
+                  print(f"::error title={headline}::{detail}")
+          else:
+              print(output[-2000:])
+          sys.exit(result.returncode)
+          PY
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
       - run: node tests/browser_answer.test.mjs
