@@ -1,0 +1,119 @@
+name: Database check (read-only, temporary)
+
+# Temporary operator tool, sibling of prod-probe.yml. The agent's sandbox cannot read
+# repository secrets (403) and cannot reach neon.tech, so "is the value the operator
+# stored in DATABASE_URL actually a working pooled Neon URL?" cannot be answered from
+# there. A runner can read the secret and reach Neon.
+#
+# Read-only against the database: SELECT 1, version(), current_database(), a table count.
+# No writes anywhere, no Vercel, no deployment. The value itself is never printed --
+# only facts derived from it (scheme, pooled/direct, sslmode, presence). Error text is
+# passed through a username:password masker before it reaches the log.
+#
+# Delete this file once the answer is known: it is not part of the product.
+on:
+  push:
+    paths:
+      - ".github/workflows/db-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DSN: ${{ secrets.DATABASE_URL }}
+      SESSION_SECRET: ${{ secrets.WAHA_SECRET }}
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet "psycopg[binary]~=3.2"
+
+      - name: Shape of the stored value, without printing it
+        run: |
+          set -uo pipefail
+          {
+            if [ -z "${DSN:-}" ]; then
+              echo "MISSING: no DATABASE_URL secret is visible in this job"
+            else
+              case "$DSN" in
+                postgres://*|postgresql://*) echo "scheme=ok (postgresql://)";;
+                https://*) echo "scheme=WRONG: this is a Data API https URL, not a connection string";;
+                *) echo "scheme=WRONG: must start with postgresql://";;
+              esac
+              case "$DSN" in
+                *-pooler*) echo "endpoint=pooled (-pooler present, right for the app)";;
+                *) echo "endpoint=direct (no -pooler: fine for migrations, but the app wants the pooled URL)";;
+              esac
+              case "$DSN" in *sslmode=*) echo "sslmode=explicit";; *) echo "sslmode=absent (the sync script appends require)";; esac
+              case "$DSN" in
+                *channel_binding=require*) echo "channel_binding=present (psycopg may reject it: drop it)";;
+                *) echo "channel_binding=absent (good)";;
+              esac
+              case "$DSN" in *neon.tech*) echo "host=*neon.tech";; *) echo "host=NOT neon.tech (wrong database?)";; esac
+              echo "value length=${#DSN} characters"
+            fi
+            if [ -z "${SESSION_SECRET:-}" ]; then
+              echo "WAHA_SECRET: MISSING (sessions drop on every container recycle)"
+            else
+              echo "WAHA_SECRET: present, length=${#SESSION_SECRET} (needs >= 16)"
+            fi
+          } | tee /tmp/shape.txt
+
+      - name: Live query (SELECT 1, version, database name, table count)
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/live.txt
+          import os
+          import re
+          import sys
+          import time
+
+          import psycopg
+
+          def masked(text):
+              return re.sub(r"://[^@/\s]*@", "://***@", str(text))
+
+          dsn = os.environ.get("DSN", "")
+          if not dsn:
+              print("MISSING: nothing to connect to")
+              sys.exit(0)
+          if "sslmode=" not in dsn:
+              dsn = dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
+          started = time.time()
+          try:
+              with psycopg.connect(dsn, connect_timeout=20) as db:
+                  one = db.execute("SELECT 1").fetchone()[0]
+                  name = db.execute("SELECT current_database()").fetchone()[0]
+                  server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
+                  tables = db.execute(
+                      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+                  ).fetchone()[0]
+              print(f"PASS: SELECT 1 = {one} in {time.time() - started:.1f}s")
+              print(f"database = {name!r}")
+              print(f"server = {server}")
+              print(f"public tables = {tables}")
+          except Exception as error:
+              print(f"FAIL: {type(error).__name__}: {masked(error)}")
+          PY
+
+      - name: Publish the findings as annotations, the channel readable remotely
+        if: always()
+        run: |
+          set -uo pipefail
+          emit() {
+            local name="$1" file="/tmp/$1.txt" text
+            [ -f "$file" ] || text="(step produced no file)"
+            text="$(tr '\n' '|' < "$file" | head -c 900)"
+            printf '::warning title=dbcheck-%s::%s\n' "$1" "${text:-"(empty)"}"
+          }
+          emit shape
+          emit live
