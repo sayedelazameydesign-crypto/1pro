@@ -235,6 +235,57 @@ class AgentCase(unittest.TestCase):
         self.assertIsNone(task["calls"][0]["result"])
         self.assertIn("رفض", task["steps"][0]["output"])
 
+    def test_code_exec_runs_behind_the_approval_gate_and_records_its_exit_status(self):
+        """R7.3+R7.4, proven end to end instead of asserted.
+
+        The tool reaches the loop with no change to `runtime.py`: it is registered
+        in the registry, it waits on the same approval handshake as `web_fetch`,
+        and its result is persisted in `agent_tool_calls`. The exit status has to
+        survive that trip -- a run the store cannot tell apart from a success is
+        how a crashed program reads as a working one.
+
+        On a machine that cannot build the boundary the *refusal* is asserted
+        instead: the same call must come back as a recorded error and never as a
+        silent success. Both branches are exercised in CI runs of this file; which
+        one this machine takes is decided by `sandbox.detect()` and printed by
+        `tests/test_agent_sandbox.py`.
+        """
+        from agent import sandbox as sandbox_module
+        code_exec = patch.object(backend.AgentConfig, "CODE_EXEC", True)
+        code_exec.start()
+        self.addCleanup(code_exec.stop)
+        self.use_script([plan(["احسب بـبايثون"]),
+                         action("code_exec", code="print(6 * 7)"),
+                         final("نفّذت الحساب"), final("تقرير")])
+        task_id = self.create().get_json()["task"]["id"]
+        waiting = None
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            waiting = backend.agent_store.get_task(task_id)
+            if waiting["status"] == "awaiting_approval" and waiting["pending_call"]:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(waiting, "code_exec must pause for approval like any egress tool")
+        call_id = waiting["pending_call"]
+        self.assertEqual(waiting["calls"][0]["tool"], "code_exec")
+        self.assertTrue(waiting["calls"][0]["approval_required"],
+                        "code execution without an approval would bypass the loop's only gate")
+        decision = self.client.post(f"/api/agent/tasks/{task_id}/approve",
+                                    data=json.dumps({"call_id": call_id, "approve": True}),
+                                    headers=self.headers())
+        self.assertEqual(decision.status_code, 200)
+        task = self.wait(task_id)
+        call = task["calls"][0]
+        if sandbox_module.detect().supports():
+            self.assertEqual(call["status"], "done", call.get("error"))
+            self.assertEqual(call["result"]["exit_status"], 0)
+            self.assertIn("42", call["result"]["stdout"])
+            self.assertFalse(call["result"]["filesystem_isolated"],
+                             "the result must carry the guarantee it does not have")
+        else:
+            self.assertEqual(call["status"], "error")
+            self.assertIn("عزل", call["error"])
+
     def test_approval_endpoint_rejects_stale_calls(self):
         self.use_script([plan(["احسب"]), action("calculator", expression="1+1"), final("2"), final("r")])
         task_id = self.create().get_json()["task"]["id"]

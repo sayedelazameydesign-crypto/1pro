@@ -2,10 +2,12 @@
 
 Design rules, all enforced here rather than in the prompt:
 
-* No shell, no code execution, no filesystem writes, no environment reads. The
-  free Render tier gives no sandbox, so pretending otherwise would be the
-  dangerous option; generated code is produced as *artifacts* and previewed in
-  a sandboxed iframe by the client instead.
+* No shell, no filesystem writes, no environment reads. Code execution exists
+  only through `agent/sandbox.py` (R7): off unless the operator opts in, gated by
+  a per-task approval, and refused outright when the machine cannot build the
+  boundary. It is never "a subprocess with a timeout" -- the guarantees are
+  declared and checked, and the one it cannot give (filesystem isolation) is
+  reported on every result instead of assumed.
 * Anything that leaves the server (web_fetch) is capability-gated by the
   operator AND requires a human approval per task unless the operator opted into
   auto-approval for read-only tools.
@@ -36,6 +38,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 import rag_search  # noqa: E402  (the only retrieval path allowed in the agent)
+from . import sandbox  # noqa: E402  (R7 boundary: never a bare subprocess)
 
 MAX_FETCH_BYTES = 200_000
 MAX_RESULT_CHARS = 6000
@@ -316,6 +319,53 @@ def _artifact_write(ctx, args):
 
 
 # --- web_fetch ----------------------------------------------------------------
+def _code_exec(ctx, args):
+    """R7.1 — run a short Python program inside the isolation boundary.
+
+    The tool is the *contract*; `agent/sandbox.py` is the boundary. Everything
+    that could weaken one is decided before a single line of the program is
+    compiled:
+
+    * the runner must be able to enforce every guarantee in
+      `sandbox.REQUIRED_CAPABILITIES` (network denial, environment allowlist,
+      timeout, output cap, memory and CPU ceilings) -- otherwise the call is
+      refused, and no code runs;
+    * the program is refused before execution if it exceeds the input cap;
+    * the filesystem is *not* isolated, and the result says `filesystem_isolated:
+      false` rather than leaving that to be inferred.
+
+    A program that fails is data, not an exception: the exit status, both
+    streams and the truncation flag travel back in the observation, which the
+    runtime persists. A refused call raises `ToolError`, which the loop already
+    turns into an observation as well -- so no failure here can kill a task.
+    """
+    code = args.get("code") or ""
+    config = ctx.config
+    runner = sandbox.detect()
+    missing = runner.missing()
+    if missing:
+        raise ToolError(
+            "تنفيذ الكود غير متاح على هذا الخادم: لا يمكن بناء حدود عزل تفرض "
+            + "، ".join(missing)
+            + ". (" + getattr(runner, "reason", runner.name) + ")")
+    limits = sandbox.Limits(
+        timeout_seconds=config.CODE_EXEC_TIMEOUT_SECONDS,
+        memory_mb=config.CODE_EXEC_MEMORY_MB,
+        cpu_seconds=config.CODE_EXEC_CPU_SECONDS,
+        max_output_bytes=config.CODE_EXEC_MAX_OUTPUT_BYTES,
+        max_input_bytes=config.MAX_TOOL_INPUT_CHARS * 2,
+    )
+    try:
+        outcome = runner.run(sandbox.RunRequest(code=code, limits=limits))
+    except sandbox.SandboxRefused as refusal:
+        raise ToolError(f"لم يُنفَّذ الكود: {refusal.message}") from refusal
+    observation = outcome.as_observation()
+    observation["note"] = ("لا يُعزل نظام الملفات: الكود قد يقرأ ملفات الخادم؛ "
+                           "وهو مرفوض لهذا السبب." if not outcome.filesystem_isolated
+                           else "الملفات معزولة أيضًا.")
+    return observation
+
+
 def _is_public_address(host):
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
@@ -523,6 +573,13 @@ def build_registry():
               "kind": {"type": "string", "required": True, "description": ", ".join(sorted(ARTIFACT_KINDS))},
               "content": {"type": "string", "required": True, "description": "محتوى الملف"}},
              _artifact_write, requires_approval=False, read_only=False),
+        Tool("code_exec",
+             "شغّل برنامج بايثون قصيراً داخل حدود عزل (شبكة مقطوعة، بيئة منظّفة، حدود "
+             "زمن وذاكرة وإخراج) وأعد حالة الخروج والمخرجات. نظام الملفات غير معزول.",
+             {"code": {"type": "string", "required": True,
+                       "description": "برنامج بايثون كامل؛ اطبع النتيجة لتقرأها"}},
+             _code_exec, requires_approval=True, read_only=False, network=False,
+             gated="CODE_EXEC"),
         Tool("web_fetch", "اجلب نص صفحة ويب عامة عبر GET مع حراسة ضد العناوين الداخلية.",
              {"url": {"type": "string", "required": True, "description": "https://…"}},
              _web_fetch, requires_approval=True, read_only=True, network=True,

@@ -68,6 +68,17 @@ class AgentConfig:
     NETWORK_TOOLS = _bool("AGENT_NETWORK_TOOLS", False)
     AUTO_APPROVE_READ_ONLY = _bool("AGENT_AUTO_APPROVE_READ_ONLY", False)
 
+    # Sandboxed code execution. Off unless the operator opts in *and* the machine
+    # can build a boundary; `sandbox.detect()` decides the second half at run
+    # time and refuses rather than running unguarded. These are requested
+    # ceilings -- the runner enforces them or refuses the call, so a value here
+    # never becomes a limit that only looks like one.
+    CODE_EXEC = _bool("AGENT_CODE_EXEC", False)
+    CODE_EXEC_TIMEOUT_SECONDS = _int("AGENT_CODE_EXEC_TIMEOUT_SECONDS", 15, 1, 120)
+    CODE_EXEC_MEMORY_MB = _int("AGENT_CODE_EXEC_MEMORY_MB", 256, 64, 2048)
+    CODE_EXEC_CPU_SECONDS = _int("AGENT_CODE_EXEC_CPU_SECONDS", 10, 1, 120)
+    CODE_EXEC_MAX_OUTPUT_BYTES = _int("AGENT_CODE_EXEC_MAX_OUTPUT_BYTES", 4000, 500, 40000)
+
     # Model override for the agent path only; empty means "use the chat model".
     MODEL = os.environ.get("AGENT_MODEL", "").strip()
 
@@ -85,6 +96,11 @@ class AgentConfig:
             "network_tools": cls.NETWORK_TOOLS,
             "auto_approve_read_only": cls.AUTO_APPROVE_READ_ONLY,
             "memory_max_items": cls.MEMORY_MAX_ITEMS,
+            "code_exec": cls.CODE_EXEC,
+            "code_exec_limits": {"timeout_seconds": cls.CODE_EXEC_TIMEOUT_SECONDS,
+                                 "memory_mb": cls.CODE_EXEC_MEMORY_MB,
+                                 "cpu_seconds": cls.CODE_EXEC_CPU_SECONDS,
+                                 "max_output_bytes": cls.CODE_EXEC_MAX_OUTPUT_BYTES},
             "model": cls.MODEL or None,
             "artifact_max_bytes": cls.MAX_ARTIFACT_BYTES,
             # Never promised: the free tier is shared and can be throttled.
