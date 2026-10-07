@@ -15,6 +15,7 @@ GOOD = {
     "GEMINI_API_KEY": "AIza" + "Q" * 35,
     "WAHA_SECRET": "s" * 64,
     "WAHA_ALLOWED_ORIGINS": PAGES,
+    "WAHA_TRUSTED_HOSTS": "waha.example.onrender.com",
 }
 
 
@@ -73,6 +74,45 @@ class CheckTests(unittest.TestCase):
     def test_missing_pages_origin_is_an_error(self):
         errors, _w, _n = check(dict(GOOD, WAHA_ALLOWED_ORIGINS="https://elsewhere.test"), target="render")
         self.assertIn("WAHA_ALLOWED_ORIGINS", codes(errors))
+
+    def test_production_requires_a_trusted_service_hostname(self):
+        env = {key: value for key, value in GOOD.items() if key != "WAHA_TRUSTED_HOSTS"}
+        errors, _w, _n = check(env, target="render")
+        self.assertIn("WAHA_TRUSTED_HOSTS", codes(errors))
+        errors, _w, _n = check(dict(env, RENDER_EXTERNAL_HOSTNAME="waha.onrender.com"),
+                               target="render")
+        self.assertNotIn("hostname موثوق", codes(errors))
+
+    def test_trusted_hosts_must_be_exact_hostnames_without_wildcards_or_ports(self):
+        errors, _w, _n = check(dict(GOOD, WAHA_TRUSTED_HOSTS="*.example.test,api.test:443"),
+                               target="render")
+        self.assertIn("WAHA_TRUSTED_HOSTS", codes(errors))
+        errors, _w, _n = check(dict(GOOD, WAHA_TRUSTED_HOSTS="127.0.0.1"), target="render")
+        self.assertIn("localhost", codes(errors))
+
+    def test_owner_origins_must_be_exact_public_https_origins(self):
+        errors, _w, _n = check(dict(GOOD, WAHA_OWNER_ALLOWED_ORIGINS="http://admin.test"),
+                               target="render")
+        self.assertIn("WAHA_OWNER_ALLOWED_ORIGINS", codes(errors))
+        errors, _w, _n = check(dict(GOOD, WAHA_OWNER_ALLOWED_ORIGINS="https://admin.test/path"),
+                               target="render")
+        self.assertIn("/path", codes(errors))
+        errors, _w, _n = check(dict(GOOD, WAHA_OWNER_ALLOWED_ORIGINS="https://10.0.0.4"),
+                               target="render")
+        self.assertIn("private/reserved IP", codes(errors))
+
+    def test_owner_secret_and_vercel_deploy_hook_are_hardened(self):
+        errors, _w, _n = check(dict(GOOD, WAHA_OWNER_TOKEN="short"), target="render")
+        self.assertIn("WAHA_OWNER_TOKEN", codes(errors))
+        errors, _w, _n = check(dict(
+            GOOD, DEPLOY_HOOK_URL="https://api.vercel.com/v1/integrations/deploy/secret-path"),
+            target="render")
+        self.assertEqual([item for item in errors if "DEPLOY_HOOK_URL" in item], [])
+        errors, _w, _n = check(dict(
+            GOOD, DEPLOY_HOOK_URL="https://evil.test/v1/integrations/deploy/secret-path"),
+            target="render")
+        self.assertIn("api.vercel.com", codes(errors))
+        self.assertNotIn("secret-path", codes(errors))
 
     def test_placeholder_secrets_are_refused(self):
         for value in ("changeme", "sk-xxxx", "your_key_here", "short"):

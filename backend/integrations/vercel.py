@@ -15,7 +15,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 from .http import (ALLOWED_API_HOSTS, IntegrationError, assert_https_host,
-                   assert_public_host, retry_after_seconds)
+                   resolve_public_addresses, retry_after_seconds)
 from .http import Transport, UrllibTransport  # noqa: F401  (re-exported for callers)
 
 
@@ -86,17 +86,22 @@ class VercelClient:
                 "has_more": bool(pagination.get("next"))}
 
     def trigger_deploy_hook(self):
-        """Fire the deploy hook. The URL is the credential, so it is validated
-        (https, public host) and then never included in the response."""
+        """Fire Vercel's deploy hook without a DNS check/use race.
+
+        The URL is the credential, so it is restricted to Vercel's generated
+        endpoint, resolved once, checked as globally routable, then pinned to the
+        HTTPS socket. It is never included in the response.
+        """
         hook = self.settings.deploy_hook
         if not hook:
             raise IntegrationError("DEPLOY_HOOK_URL غير مضبوط على الخادم.",
                                    code="not_configured", status=503)
-        host = assert_https_host(hook, None)
-        assert_public_host(host, self.resolver)
+        host = assert_https_host(hook, {"api.vercel.com"})
+        addresses = resolve_public_addresses(host, self.resolver)
         response = self.transport.request("POST", hook,
                                           headers={"User-Agent": "waha-integrations/1.0"},
-                                          body=b"{}", timeout=self.timeout)
+                                          body=b"{}", timeout=self.timeout,
+                                          resolved_addresses=addresses)
         if not response.ok:
             # Reuse the mapping, but the hook answers plain text more often than JSON.
             message = self.redact(response.text(300) or f"استجابة {response.status}.")

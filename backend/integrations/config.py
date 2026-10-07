@@ -14,9 +14,12 @@ browser -- so:
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from typing import FrozenSet, Mapping, Tuple
+from urllib.parse import urlsplit
 
 # An owner session is deliberately shorter-lived than a visitor token (400 days).
 # This surface can trigger a production deployment; 8 hours is one working day.
@@ -51,9 +54,112 @@ def _int(raw, default, minimum, maximum):
     return max(minimum, min(maximum, value))
 
 
+def normalize_hostname(raw):
+    """Return one canonical exact hostname, or ``None`` for unsafe syntax.
+
+    Host allowlists deliberately do not support wildcards, ports, URLs, or legacy
+    numeric IPv4 spellings. A suffix wildcard would let a rebinding-controlled
+    subdomain become trusted; a port is ignored by Werkzeug's host check anyway.
+    """
+    value = str(raw or "").strip()
+    if not value or any(ord(char) < 0x21 for char in value):
+        return None
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    if any(char in value for char in "/\\@?#*%"):
+        return None
+    value = value.rstrip(".")
+    if not value:
+        return None
+    try:
+        return ipaddress.ip_address(value).compressed.lower()
+    except ValueError:
+        pass
+    # Browsers normalize shortened numeric IPv4 forms such as 127.1. Do not
+    # accept those as DNS names in a security allowlist.
+    if all(char in "0123456789." for char in value):
+        return None
+    if ":" in value:
+        return None
+    try:
+        ascii_host = value.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    if len(ascii_host) > 253:
+        return None
+    labels = ascii_host.split(".")
+    if any(not label or len(label) > 63
+           or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+           for label in labels):
+        return None
+    return ascii_host
+
+
+def normalize_origin(raw):
+    """Canonicalize a browser Origin; reject paths, credentials and odd syntax."""
+    value = str(raw or "").strip()
+    if not value or "\\" in value or any(ord(char) < 0x20 for char in value):
+        return None
+    try:
+        parts = urlsplit(value)
+        scheme = parts.scheme.lower()
+        raw_host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if (scheme not in ("http", "https") or not parts.netloc or not raw_host
+            or parts.username is not None or parts.password is not None
+            or parts.path not in ("", "/") or parts.query or parts.fragment):
+        return None
+    host = normalize_hostname(raw_host)
+    if host is None:
+        return None
+    default_port = 443 if scheme == "https" else 80
+    authority_host = f"[{host}]" if ":" in host else host
+    authority = authority_host if port in (None, default_port) else f"{authority_host}:{port}"
+    return f"{scheme}://{authority}"
+
+
+def parse_origins(raw):
+    """Parse a comma-separated explicit origin allowlist into canonical origins."""
+    return frozenset(normalized for item in str(raw or "").split(",")
+                     if (normalized := normalize_origin(item)))
+
+
+def configured_trusted_hosts(environ=None):
+    """Exact service hosts from explicit config and hosting-platform metadata."""
+    env = os.environ if environ is None else environ
+    candidates = [item.strip() for item in str(env.get("WAHA_TRUSTED_HOSTS", "") or "").split(",")
+                  if item.strip()]
+    candidates.extend(str(env.get(key, "") or "").strip() for key in (
+        "RENDER_EXTERNAL_HOSTNAME", "VERCEL_URL", "VERCEL_PROJECT_PRODUCTION_URL",
+        "VERCEL_BRANCH_URL"))
+    return tuple(sorted({host for candidate in candidates
+                         if (host := normalize_hostname(candidate))}))
+
+
+def trusted_hosts(environ=None):
+    """Build Flask's host allowlist from exact origins, platform hosts and dev loopback.
+
+    Platform variables cover the canonical Render and Vercel hostnames. A custom
+    domain can be added with ``WAHA_TRUSTED_HOSTS``. In production, the deploy
+    doctor requires one of those sources so a public Host header is never trusted
+    merely because it equals an attacker-controlled Origin.
+    """
+    env = os.environ if environ is None else environ
+    hosts = set(configured_trusted_hosts(env))
+    for key in ("WAHA_ALLOWED_ORIGINS", "WAHA_OWNER_ALLOWED_ORIGINS"):
+        for origin in parse_origins(env.get(key, "")):
+            host = normalize_hostname(urlsplit(origin).hostname)
+            if host:
+                hosts.add(host)
+    hosts.update(("localhost", "127.0.0.1"))
+    return tuple(sorted(hosts))
+
+
 def _origins(raw):
-    return frozenset(origin.strip().rstrip("/")
-                     for origin in str(raw or "").split(",") if origin.strip())
+    """Backward-compatible private name for the config parser."""
+    return parse_origins(raw)
 
 
 @dataclass(frozen=True)

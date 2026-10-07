@@ -34,6 +34,9 @@ services:
         value: "5"
       - key: AGENT_TASK_DEADLINE_SECONDS
         value: "180"
+      # Host hardening uses Render's runtime RENDER_EXTERNAL_HOSTNAME automatically.
+      # For a custom domain, add its exact hostname to WAHA_TRUSTED_HOSTS (no scheme,
+      # port or wildcard), and run deploy_doctor with that value in service.env.
       # Owner integrations (backend/integrations/*, page at /integrations).
       # Deliberately NOT declared as envVars: `sync: false` would make Render prompt
       # for seven values on every blueprint deploy, and the surface degrades safely

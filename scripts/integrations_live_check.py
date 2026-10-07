@@ -218,14 +218,16 @@ def self_test(config):
     failures = 0
     full = {"GITHUB_TOKEN": "ghp_fakeToken12345", "GITHUB_REPO": "acme/widgets",
             "GITHUB_WORKFLOW_ID": "ci.yml", "VERCEL_TOKEN": "vercel_fakeToken",
-            "VERCEL_PROJECT_ID": "prj_1", "DEPLOY_HOOK_URL": "https://hook.test/x",
+            "VERCEL_PROJECT_ID": "prj_1",
+            "DEPLOY_HOOK_URL": "https://api.vercel.com/v1/integrations/deploy/prj_1/fake-hook",
             "WAHA_OWNER_TOKEN": "owner_fakeToken"}
 
     class FakeTransport(httpmod.Transport):
         def __init__(self, *answers):
             self.answers = list(answers)
 
-        def request(self, method, url, headers=None, body=None, timeout=15):
+        def request(self, method, url, headers=None, body=None, timeout=15,
+                    resolved_addresses=None):
             return self.answers.pop(0)
 
     def resp(status=200, payload=None):
