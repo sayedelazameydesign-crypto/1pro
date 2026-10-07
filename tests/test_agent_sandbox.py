@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from agent import sandbox  # noqa: E402
+from agent import workspace  # noqa: E402
 from agent.config import AgentConfig  # noqa: E402
 from agent.tools import ToolError, build_registry  # noqa: E402
 from agent.runtime import ToolContext  # noqa: E402
@@ -330,6 +331,67 @@ class CodeExecIsOffAndGated(unittest.TestCase):
         self.assertIn("code_exec", registry.prompt_text(On()))
 
 
+class OneWorkspaceNotTwo(unittest.TestCase):
+    """The contract the file tools will be built on: one directory, not two.
+
+    A file tool writes into the task's directory in the host filesystem; a program
+    inside the sandbox reads `/workspace`. If those are two directories that happen
+    to hold the same contents, everything above them looks right until someone
+    writes with a tool and reads with code -- which is exactly the defect this stage
+    exists to prevent. So the assertion is the inode number, the one property a copy
+    cannot fake, in both directions.
+
+    The refusal half needs no boundary: a runner with no mount namespace must refuse
+    a workspace rather than run the program against the host's filesystem and call
+    it isolated.
+    """
+
+    TASK = "0123456789abcdef"
+
+    def test_a_runner_that_claims_the_capability_without_a_namespace_is_stopped(self):
+        """A safety net against a lying declaration, tested with a lying declaration.
+
+        A runner with an incomplete capability set is refused earlier, so this check
+        is normally unreachable -- which is exactly why it is tested from the only
+        direction that reaches it: a runner that says it isolates the filesystem and
+        then has no mount namespace to mount anything into.
+        """
+
+        class Claims(sandbox.NamespaceRunner):
+            capabilities = sandbox.REQUIRED_CAPABILITIES
+
+        runner = Claims("/usr/bin/unshare")   # never spawned
+        with self.assertRaises(sandbox.SandboxRefused) as caught:
+            runner.run(sandbox.RunRequest(
+                code="print(1)", limits=limits(),
+                workspace=f"{workspace.ROOT}/tasks/{self.TASK}"))
+        self.assertEqual(caught.exception.code, "filesystem_isolation")
+
+    def test_the_unavailable_runner_refuses_every_request_before_any_check_of_it(self):
+        """The order of refusals is a contract: on a host with no boundary, nothing
+        is inspected, so a malformed or oversized program cannot produce a different
+        answer -- and a caller cannot read "input too large" as "execution is set up"."""
+        runner = sandbox.UnavailableRunner("no boundary on this machine")
+        for request in (sandbox.RunRequest(code="", limits=limits()),
+                        sandbox.RunRequest(code="x" * 100000, limits=limits(inp=10)),
+                        sandbox.RunRequest(code="print(1)", limits=limits(),
+                                           workspace=f"{workspace.ROOT}/tasks/{self.TASK}")):
+            with self.subTest(code=request.code[:12]):
+                with self.assertRaises(sandbox.SandboxRefused) as caught:
+                    runner.run(request)
+                self.assertEqual(caught.exception.code, "sandbox_unavailable")
+                self.assertEqual(caught.exception.message, runner.reason)
+
+    def test_a_workspace_outside_the_task_tree_never_reaches_the_boundary(self):
+        # The check is the module's, called by the runner before any mount is built:
+        # a path the caller composed is still a path, and `..` is refused, not fixed.
+        for fake in ("/etc", f"{workspace.ROOT}/tasks/{self.TASK}/../../..", "tasks/x"):
+            with self.subTest(fake=fake):
+                with self.assertRaises(workspace.WorkspaceRefused) as caught:
+                    workspace.check_mount(fake)
+                self.assertEqual(caught.exception.code, "unsafe_workspace")
+
+
 @unittest.skipUnless(BOUNDARY_AVAILABLE,
                      f"no isolation boundary on this machine ({BOUNDARY_REASON})")
 class TheBoundaryHoldsAgainstRealCode(unittest.TestCase):
@@ -606,6 +668,59 @@ class TheBoundaryHoldsAgainstRealCode(unittest.TestCase):
         outcome = run_code("import time\ntime.sleep(600)\n", timeout=2, cpu=30)
         self.assertTrue(outcome.timed_out)
         self.assertLess(time.time() - started, 20)
+
+    def test_a_write_from_outside_is_the_same_file_inside(self):
+        """The inode, in both directions, against the task's own directory.
+
+        One direction is not enough. A copy would satisfy "the program can read what
+        the tool wrote"; it is the *write coming back* that a copy cannot fake, and
+        the inode number is what neither can.
+        """
+        with tempfile.TemporaryDirectory() as base, \
+                patch.object(workspace, "ROOT", base):
+            task = workspace.task_root(OneWorkspaceNotTwo.TASK, create=True)
+            note = Path(task, "note.txt")
+            note.write_text("written by the tool", encoding="utf-8")   # the tool's half
+            outcome = RUNNER.run(sandbox.RunRequest(
+                code=("import os\n"
+                      "print('read', open('/workspace/note.txt').read())\n"
+                      "print('ino-read', os.stat('/workspace/note.txt').st_ino)\n"
+                      "open('/workspace/from_code.txt', 'w').write('written by code')\n"
+                      "print('ino-wrote', os.stat('/workspace/from_code.txt').st_ino)\n"),
+                limits=limits(timeout=15), workspace=task))
+            self.assertEqual(outcome.exit_status, 0, outcome.stderr[-400:])
+            self.assertIn("read written by the tool", outcome.stdout)
+            self.assertIn(f"ino-read {note.stat().st_ino}", outcome.stdout,
+                          "the sandbox read a different file than the tool wrote")
+
+            back = Path(task, "from_code.txt")
+            self.assertTrue(back.exists(),
+                            "the sandbox wrote somewhere other than the task's directory")
+            self.assertEqual(back.read_text(encoding="utf-8"), "written by code")
+            self.assertIn(f"ino-wrote {back.stat().st_ino}", outcome.stdout,
+                          "the file that reached the host is not the file the program wrote")
+
+            self.assertEqual(outcome.workspace, task)
+            self.assertTrue(outcome.as_observation()["workspace_persisted"])
+
+    def test_a_run_without_a_workspace_still_keeps_nothing(self):
+        """The default did not change: no caller directory, nothing left behind.
+
+        Two runs, one file written in the first, and the second must not see it. The
+        old behaviour is a promise to everyone who ran the tool before R7.4 existed.
+        """
+        first = RUNNER.run(sandbox.RunRequest(
+            code="open('/workspace/carry.txt', 'w').write('x')\nprint('wrote')\n",
+            limits=limits(timeout=15)))
+        self.assertEqual(first.exit_status, 0, first.stderr[-300:])
+        self.assertEqual(first.workspace, "")
+        self.assertFalse(first.as_observation()["workspace_persisted"])
+
+        second = RUNNER.run(sandbox.RunRequest(
+            code="import os\nprint('exists', os.path.exists('/workspace/carry.txt'))\n",
+            limits=limits(timeout=15)))
+        self.assertIn("exists False", second.stdout,
+                      "a throwaway workspace survived its run and reached the next one")
 
 
 if __name__ == "__main__":

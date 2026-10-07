@@ -52,6 +52,8 @@ import tempfile
 import time
 from dataclasses import dataclass
 
+from . import workspace  # the one place an id becomes a path (and a path is checked)
+
 # The boundary, as a name and as a claim. Reported verbatim in every result so a
 # run is never ambiguous about what produced it.
 ISOLATION_PRIVATE_ROOT = "user+mount+pid+network-namespace/private-root"
@@ -225,6 +227,12 @@ class Limits:
 class RunRequest:
     code: str
     limits: Limits
+    # The directory to mount at `/workspace`, or "" for one this runner creates and
+    # deletes with the run. Supplied by the caller as a *path it obtained from
+    # `workspace.task_root()`* -- this runner checks the path (absolute, a real
+    # directory, no `..`, inside the task tree) but it does not invent one, and it
+    # never composes a workspace name from anything the program can influence.
+    workspace: str = ""
 
 
 @dataclass(frozen=True)
@@ -241,6 +249,11 @@ class RunOutcome:
     filesystem_isolated: bool
     aggregate_memory_bound_mb: int
     error: str = ""
+    # The caller's directory that was mounted and left in place, or "" when the
+    # workspace was this runner's own throwaway one. It is the difference between
+    # "the program's files are the caller's to keep" and "nothing outlives the run",
+    # which the caller cannot tell from the output alone.
+    workspace: str = ""
 
     @property
     def ok(self) -> bool:
@@ -263,6 +276,7 @@ class RunOutcome:
             "isolation": self.isolation,
             "filesystem_isolated": self.filesystem_isolated,
             "aggregate_memory_bound_mb": self.aggregate_memory_bound_mb,
+            "workspace_persisted": bool(self.workspace),
             "error": self.error,
         }
 
@@ -308,6 +322,7 @@ class SandboxRunner:
             isolation=self.isolation,
             filesystem_isolated=self.filesystem_isolated,
             aggregate_memory_bound_mb=limits.aggregate_memory_bound_mb,
+            workspace=request.workspace or "",
             error=("timed out after %ss" % limits.timeout_seconds) if timed_out else "",
         )
 
@@ -360,6 +375,13 @@ class NamespaceRunner(SandboxRunner):
     def run(self, request: RunRequest) -> RunOutcome:
         self._refuse_if_incomplete()
         self._refuse_if_unusable(request)
+        if request.workspace:
+            # No mount namespace, so there is nothing to mount *into*: this runner
+            # would run the program against the host's own filesystem, and a
+            # caller-provided workspace would quietly become a lie about isolation.
+            raise SandboxRefused(
+                "filesystem_isolation",
+                "this runner has no mount namespace, so it cannot mount a task workspace")
         started = time.time()
         workdir = tempfile.mkdtemp(prefix="waha-code-exec-")
         try:
@@ -382,9 +404,16 @@ class PrivateRootRunner(SandboxRunner):
     """The full boundary: mount + PID + network + user namespaces over a private root.
 
     `/` inside the sandbox is a tmpfs. The runtime is bound into it read-only;
-    `/workspace` is the caller's directory (so files the program writes are the
-    caller's to keep) and `/tmp` is scratch inside the root. Everything else on
-    the host is not hidden by a rule -- it was never mounted, so it does not exist.
+    `/workspace` is a directory and `/tmp` is scratch inside the root. Everything
+    else on the host is not hidden by a rule -- it was never mounted, so it does
+    not exist.
+
+    `/workspace` is either a directory this runner makes and removes with the run,
+    or the task's own directory when the caller names one (`workspace.task_root()`),
+    in which case it is *bound* into the root and left in place. Bound, not copied:
+    the inode a file tool writes is the inode a program reads, and a test asserts
+    exactly that -- because two directories that look the same are a defect that
+    only shows up in "write with a tool, read with code".
     """
 
     name = "private-root"
@@ -409,15 +438,27 @@ class PrivateRootRunner(SandboxRunner):
         self._refuse_if_incomplete()
         self._refuse_if_unusable(request)
         started = time.time()
+        if request.workspace:
+            # The task's own directory. It is bound into the root -- same inode, not
+            # a copy -- and this runner does not remove it: the whole point of R7.4
+            # is that what a file tool writes and what a program reads are the same
+            # file, so the directory outlives the call. Only the private root, which
+            # this runner does own, is reclaimed on every exit path.
+            caller_workspace = workspace.check_mount(request.workspace)
+            root_dir = tempfile.mkdtemp(prefix="waha-code-exec-root-")
+            try:
+                return self._spawn(request, root_dir, caller_workspace, started)
+            finally:
+                shutil.rmtree(root_dir, ignore_errors=True)
         # One directory holds both halves -- the workspace the program writes into
         # and the root it is built from -- so a single removal reclaims everything
         # on every exit path, including the timeout path.
         base = tempfile.mkdtemp(prefix="waha-code-exec-")
-        workspace = os.path.join(base, "workspace")
+        throwaway = os.path.join(base, "workspace")
         root = os.path.join(base, "root")
-        os.makedirs(workspace, exist_ok=True)
+        os.makedirs(throwaway, exist_ok=True)
         try:
-            return self._spawn(request, root, workspace, started)
+            return self._spawn(request, root, throwaway, started)
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
