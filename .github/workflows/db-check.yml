@@ -119,6 +119,99 @@ jobs:
               print("psycopg unavailable; skipped the server-message proof")
           PY
 
+      - name: Can the stored NEON_API_KEY produce the real connection string?
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/neon.txt
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          API = "https://console.neon.tech/api/v2"
+          key = os.environ.get("NEON_API_KEY", "")
+          if not key:
+              print("MISSING: no NEON_API_KEY is visible in this job")
+              raise SystemExit(0)
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  API + path,
+                  headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  body = error.read(300).decode("utf-8", "replace")
+                  return error.code, {"_body": body}
+              except Exception as error:
+                  return 0, {"_body": f"{type(error).__name__}: {error}"}
+
+
+          # The endpoint id is public: it is in the project's Neon Auth URL.
+          endpoint_id = "ep-small-meadow-b424bx1m"
+          status, payload = get("/projects?limit=100")
+          if status != 200:
+              print(f"projects: HTTP {status} {str(payload.get('_body', payload))[:200]}")
+              raise SystemExit(0)
+          projects = payload.get("projects", [])
+          print(f"projects: {len(projects)} visible to this key")
+          for project in projects:
+              print(f"  - {project.get('name')}  id={project.get('id')}  "
+                    f"region={project.get('region_id')}  pg={project.get('pg_version')}")
+          ids = [p.get("id") for p in projects]
+          for project_id in ids:
+              status, payload = get(f"/projects/{project_id}/endpoints")
+              for endpoint in payload.get("endpoints", []):
+                  host = endpoint.get("host", "")
+                  print(f"  endpoint of {project_id}: {host} (type={endpoint.get('type')})")
+                  if host.startswith(endpoint_id):
+                      print(f"MATCH: the project behind the auth URL is {project_id}")
+                      print(f"  endpoint type = {endpoint.get('type')}")
+                      branches_status, branches = get(f"/projects/{project_id}/branches")
+                      for branch in branches.get("branches", []):
+                          print(f"  branch {branch.get('name')} primary={branch.get('primary')} "
+                                f"id={branch.get('id')}")
+                          branch_id = branch.get("id")
+                          roles_status, roles = get(
+                              f"/projects/{project_id}/branches/{branch_id}/roles")
+                          for role in roles.get("roles", []):
+                              name = role.get("name")
+                              print(f"    role {name} (protected={role.get('protected')})")
+                              if name == "neondb_owner":
+                                  rev_status, rev = get(
+                                      f"/projects/{project_id}/branches/{branch_id}"
+                                      f"/roles/{name}/reveal_password")
+                                  if rev_status == 200 and rev.get("password"):
+                                      password = rev["password"]
+                                      pooled = host.replace(endpoint_id, endpoint_id + "-pooler", 1)
+                                      dsn = (f"postgresql://{name}:{password}@{pooled}"
+                                             f"/neondb?sslmode=require")
+                                      print(f"    reveal_password: HTTP 200 "
+                                            f"(password length {len(password)})")
+                                      mask = re.sub(r"://[^@/\s]*@", "://***@", dsn)
+                                      print(f"    usable pooled URL shape: {mask}")
+                                      try:
+                                          import psycopg
+                                          with psycopg.connect(dsn, connect_timeout=20) as db:
+                                              one = db.execute("SELECT 1").fetchone()[0]
+                                              dbname = db.execute(
+                                                  "SELECT current_database()"
+                                              ).fetchone()[0]
+                                          print(f"    LIVE CHECK: SELECT 1 = {one}, "
+                                                f"database = {dbname!r} -- the API path works")
+                                      except Exception as error:
+                                          print(f"    LIVE CHECK failed: {type(error).__name__}: "
+                                                f"{re.sub(r'://[^@/]*@', '://***@', str(error))[:160]}")
+                                  else:
+                                      print(f"    reveal_password: HTTP {rev_status} -- "
+                                            f"the role may be protected; a reset would be needed")
+          PY
+
       - name: Presence of the session secret
         run: |
           set -uo pipefail
@@ -194,5 +287,6 @@ jobs:
           }
           emit shape
           emit hosts
+          emit neon
           emit session
           emit live
