@@ -436,24 +436,57 @@ if have "$DATABASE_URL"; then
     *) bad "DATABASE_URL does not start with postgres:// or postgresql:// -- Vercel would keep losing data in /tmp" ;;
   esac
   if python3 -c 'import psycopg' 2>/dev/null; then
-    if DB_URL="$DATABASE_URL" python3 - <<'PY' 2>&1 | redact DATABASE_URL
-import os, sys
+    db_status=0
+    DB_URL="$DATABASE_URL" python3 - <<'PY' 2>&1 | redact DATABASE_URL || db_status=$?
+import os, sys, time
 import psycopg
+
 dsn = os.environ["DB_URL"]
 if "sslmode=" not in dsn:
     dsn = dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
-try:
+
+
+def query():
     with psycopg.connect(dsn, connect_timeout=15) as db:
         server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
         name = db.execute("SELECT current_database()").fetchone()[0]
         print(f"{name!r} answered a live query ({server})")
-except Exception as error:
-    print(f"connection refused: {type(error).__name__}: {error}")
-    sys.exit(1)
+
+
+def rejected(error):
+    """True when the *server* refused the credentials, i.e. a fact about the value.
+
+    A timeout, a refused connection or a DNS failure is a fact about the network right
+    now. Reporting the second as if it were the first sends the operator off to fix a
+    secret that was never broken -- which is what happened on 2026-10-07, when a
+    suspended Neon compute made this step fail once and the run then reported the
+    database URL as wrong. Exit 1 means "the value is rejected", exit 2 means "could
+    not verify", and only the first is evidence about the secret.
+    """
+    state = getattr(error, "sqlstate", "") or ""
+    text = str(error).lower()
+    return state in ("28P01", "28000") or "authentication" in text
+
+
+last = None
+for pause in (0, 5, 15):        # a suspended Neon compute may need a moment to wake
+    if pause:
+        time.sleep(pause)
+    try:
+        query()
+        sys.exit(0)
+    except Exception as error:  # noqa: BLE001 -- classified right below
+        last = error
+        if rejected(error):
+            break
+print(f"connection failed: {type(last).__name__}: {last}")
+sys.exit(1 if rejected(last) else 2)
 PY
-    then ok "the database answered a live query"
-    else bad "the database URL did not connect -- check the password, sslmode, and drop channel_binding=require"
-    fi
+    case "$db_status" in
+      0) ok "the database answered a live query" ;;
+      1) bad "the database rejected the credentials in the URL -- check the password, the role, and drop channel_binding=require" ;;
+      *) bad "could not reach the database after three attempts (looks transient, not a verdict on the value) -- nothing was sent to Vercel; re-run when the network or the Neon endpoint is up" ;;
+    esac
   else
     warn "psycopg is not installed here; skipping the live database check"
   fi
@@ -498,7 +531,7 @@ if [ "$FAILED" -gt 0 ]; then
     # A dry run changes nothing anywhere, so it keeps going and reports the rest. Stopping
     # at the first bad value made the operator fix one variable, re-run, find the next --
     # which is how a broken database URL hid a broken team id for a whole run.
-    warn "$FAILED value(s) are wrong (not merely missing); continuing so the rest of the report is complete"
+    warn "$FAILED check(s) failed (not merely missing); continuing so the rest of the report is complete"
   else
     echo "Stopping: $FAILED value(s) are wrong (not merely missing), so nothing was sent to Vercel."
     exit 1

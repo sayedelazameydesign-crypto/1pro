@@ -126,7 +126,7 @@ jobs:
           echo "--- dry run ---"
           cat /tmp/dryrun.log 2>/dev/null || echo "(no log)"
           printf '::warning title=dryrun-exit%s::%s\n' "$(cat /tmp/dryrun.status 2>/dev/null)" \
-            "$(tr '\n' '|' < /tmp/dryrun.log 2>/dev/null | head -c 1800)"
+            "$(tr '\n' '|' < /tmp/dryrun.log 2>/dev/null | head -c 4000)"
           if [ -s /tmp/vars.txt ]; then
             printf '::warning title=public-variables::%s\n' \
               "$(tr '\n' '|' < /tmp/vars.txt | head -c 400)"
