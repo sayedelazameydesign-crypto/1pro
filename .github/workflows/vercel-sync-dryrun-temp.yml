@@ -69,6 +69,22 @@ jobs:
           done
           cat /tmp/vars.txt || true
 
+      # Is the deployed service actually correct right now? Three public GETs, the same
+      # ones prod-probe.yml makes: /health says which database and model the running
+      # container resolved, /readyz runs a real SELECT 1, and neither needs a secret.
+      - name: Probe the deployed service (public endpoints, read-only)
+        id: prod
+        run: |
+          set -uo pipefail
+          : > /tmp/prod.txt
+          service="${WAHA_SERVICE_URL:-https://cela-umber.vercel.app}"
+          curl -sS --max-time 45 "$service/health?probe=$(date +%s)" -o /tmp/health.json 2>/tmp/health.err || true
+          jq -r '"health ok=\(.ok) database=\(.database) ai=\(.ai) rag_ready=\(.rag.ready) rows=\(.rag.rows // .rag.vectors // "?")"' \
+            /tmp/health.json 2>/dev/null >> /tmp/prod.txt || echo "health: unreadable ($(head -c 120 /tmp/health.err))" >> /tmp/prod.txt
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 "$service/readyz?probe=$(date +%s)" 2>/dev/null || echo 000)"
+          printf 'readyz=%s (204 = a real SELECT 1 reached the database)\n' "$code" >> /tmp/prod.txt
+          cat /tmp/prod.txt
+
       # The same alias table the sync workflow uses, and the same script: the verdict
       # here is the verdict the real run would get, minus the writes.
       - name: Validate the secrets and resolve the scope (dry run)
@@ -115,6 +131,8 @@ jobs:
             printf '::warning title=public-variables::%s\n' \
               "$(tr '\n' '|' < /tmp/vars.txt | head -c 400)"
           fi
+          printf '::warning title=deployed-service::%s\n' \
+            "$(tr '\n' '|' < /tmp/prod.txt 2>/dev/null | head -c 700)"
 
       - name: Fail when the dry run failed
         run: |

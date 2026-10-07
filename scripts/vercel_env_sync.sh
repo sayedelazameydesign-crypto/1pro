@@ -11,6 +11,7 @@
 # Usage:
 #   scripts/vercel_env_sync.sh --dry-run     # validate only, touch nothing
 #   scripts/vercel_env_sync.sh               # validate, push to Vercel, redeploy
+#   scripts/vercel_env_sync.sh --self-test   # offline: prove the redactor and matcher
 #
 # --dry-run validates the values *and* resolves the Vercel team and project, because
 # a scope that cannot read is a deploy that cannot finish: the run that "validated
@@ -38,10 +39,12 @@ set -uo pipefail
 
 DRY_RUN=0
 NEON_FETCH=1
+SELF_TEST=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --no-neon-fetch) NEON_FETCH=0 ;;
+    --self-test) SELF_TEST=1 ;;
   esac
 done
 
@@ -64,6 +67,43 @@ SECRET_ALIASES=(WAHA_SECRET WAHA_APP_SECRET APP_SECRET FLASK_SECRET WAHA_CSRF_SE
 ORIGIN_ALIASES=(WAHA_ALLOWED_ORIGINS ALLOWED_ORIGINS WAHA_ORIGINS CORS_ORIGINS)
 TOKEN_ALIASES=(VERCEL_TOKEN VERCEL_API_TOKEN VERCEL_ACCESS_TOKEN)
 
+# Match the stored team value against the teams the token can actually see. Kept as one
+# function so the live run and --self-test execute the same code: a test that re-implements
+# the matcher would pass while the matcher was broken.
+team_verdict() { # 1: stored VERCEL_TEAM_ID, 2: fallback slug; stdin: /v2/teams JSON
+  python3 -c '
+import json, sys
+teams = (json.load(sys.stdin) or {}).get("teams") or []
+want = (sys.argv[1] or "").strip()
+slug = (sys.argv[2] or "").strip()
+by_id = next((t for t in teams if want and t.get("id") == want), None)
+by_slug = next((t for t in teams if want and t.get("slug") == want), None)
+named = next((t for t in teams if slug and t.get("slug") == slug), None)
+alternative = named or (teams[0] if len(teams) == 1 else None)
+
+def line(kind, team):
+    team = team or {}
+    print("\t".join([kind, team.get("id") or "",
+                      team.get("name") or team.get("slug") or ""]))
+
+# An absent value is a lookup; a wrong value is a defect. They are never collapsed:
+# "stale" keeps reporting the mismatch even when a usable alternative exists, because
+# quietly replacing a wrong id is how one survives a release.
+if want and by_id:
+    line("match", by_id)
+elif want and by_slug:
+    line("slug", by_slug)
+elif want:
+    line("stale", alternative)
+elif named:
+    line("slugonly", named)
+elif len(teams) == 1:
+    line("single", teams[0])
+else:
+    print("none\t\t")
+' "$1" "$2"
+}
+
 FAILED=0
 ok() { printf 'PASS  %s\n' "$1"; }
 warn() { printf 'WARN  %s\n' "$1"; }
@@ -85,16 +125,26 @@ http_code() { # raw -> exactly three digits, 000 when curl could not connect
 # DSN) with ***. Values are read from the environment by name, never from a shell
 # argument, so they cannot show up in a process list either.
 redact() {
-  python3 - "$@" <<'PY'
+  python3 - "$@" 3<&0 <<'PY'
 import os, re, sys, urllib.parse
-text = sys.stdin.read()
+# The program is read from stdin (the heredoc below), so the text to scrub is read from
+# fd 3 -- a duplicate of the caller's stdin, taken before the heredoc replaced it. An
+# earlier version read sys.stdin here, which is the *program*, so every redacted line
+# came out empty: the database connection error and every Vercel error body were
+# silently dropped from the report. Fail-closed, but blind -- and "a failure names the
+# exact secret to fix" stops being true when the reason never reaches the log.
+# --self-test proves both directions: text passes through, and values are masked.
+text = os.fdopen(3, "r", errors="replace").read()
 for name in sys.argv[1:]:
     value = os.environ.get(name, "")
     if len(value) < 6:
         continue
     text = text.replace(value, "***")
     text = text.replace(urllib.parse.quote(value, safe=""), "***")
-    text = re.sub(r"://[^@/\s]*@", "://***@", text)
+# Structural rule, applied whether or not a named value matched: a password inside any
+# DSN in the text is masked. It used to live inside the loop above, so a call whose
+# names were all short or empty skipped it entirely.
+text = re.sub(r"://[^@/\s]*@", "://***@", text)
 print(text, end="")
 PY
 }
@@ -269,6 +319,54 @@ print(urllib.parse.quote(os.environ["NEON_DERIVED_PASSWORD"], safe=""))')"
   return 0
 }
 
+# --- Offline self-test --------------------------------------------------------
+# Two things must hold without credentials, and both were false once: the redactor must
+# pass text through while masking values (it dropped everything instead), and the team
+# matcher must call a stored value that is not this team's id a defect rather than
+# resolving around it.
+self_test() {
+  local failures=0 checks=0 out
+  expect() { # condition, label
+    checks=$((checks + 1))
+    if [ "$1" != "0" ]; then
+      printf 'self-test FAIL: %s\n' "$2"
+      failures=$((failures + 1))
+    fi
+  }
+
+  export SYNC_SELFTEST_SECRET="ghp_selftestvalue1234567890"
+  out="$(printf 'hello token=%s encoded=%s\n' "$SYNC_SELFTEST_SECRET" \
+        "$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$SYNC_SELFTEST_SECRET")" \
+        | redact SYNC_SELFTEST_SECRET)"
+  [ -n "$out" ] && expect 0 "redact drops nothing" || expect 1 "redact drops nothing"
+  case "$out" in *hello*) expect 0 "redact passes text through" ;; *) expect 1 "redact passes text through" ;; esac
+  case "$out" in *"$SYNC_SELFTEST_SECRET"*) expect 1 "redact masks the raw value" ;; *) expect 0 "redact masks the raw value" ;; esac
+  case "$out" in *ghp_selftestvalue*) expect 1 "redact masks the URL-encoded value" ;; *) expect 0 "redact masks the URL-encoded value" ;; esac
+  out="$(printf 'dsn=postgresql://user:pw@host:5432/db\n' | redact NOTHING)"
+  case "$out" in *"://***@"*) expect 0 "redact masks a password inside a DSN" ;; *) expect 1 "redact masks a password inside a DSN" ;; esac
+
+  local one='{"teams":[{"id":"team_ONE","slug":"one","name":"One"}]}'
+  local two='{"teams":[{"id":"team_ONE","slug":"one","name":"One"},{"id":"team_TWO","slug":"two","name":"Two"}]}'
+  case "$(printf '%s' "$one" | team_verdict team_ONE one)" in match*) expect 0 "a stored id matches" ;; *) expect 1 "a stored id matches" ;; esac
+  case "$(printf '%s' "$one" | team_verdict one one)" in slug*) expect 0 "a stored slug resolves to the id" ;; *) expect 1 "a stored slug resolves to the id" ;; esac
+  case "$(printf '%s' "$two" | team_verdict bogus one)" in stale*) expect 0 "a wrong value is a defect" ;; *) expect 1 "a wrong value is a defect" ;; esac
+  case "$(printf '%s' "$two" | team_verdict '' one)" in slugonly*) expect 0 "an absent value is a lookup" ;; *) expect 1 "an absent value is a lookup" ;; esac
+  case "$(printf '%s' "$one" | team_verdict '' other)" in single*) expect 0 "a lone team is used when named one is missing" ;; *) expect 1 "a lone team is used when named one is missing" ;; esac
+  case "$(printf '%s' "$two" | team_verdict '' other)" in none*) expect 0 "several teams with no match resolve to none" ;; *) expect 1 "several teams with no match resolve to none" ;; esac
+
+  if [ "$failures" -gt 0 ]; then
+    printf 'vercel_env_sync self-test: %s of %s failed\n' "$failures" "$checks"
+    return 1
+  fi
+  printf 'vercel_env_sync self-test: ok (%s checks)\n' "$checks"
+  return 0
+}
+
+if [ "$SELF_TEST" = "1" ]; then
+  self_test
+  exit $?
+fi
+
 echo "== 1/5 GitHub secrets (read from this runner's environment)"
 echo "key                  state"
 if resolve DATABASE_URL "${DATABASE_ALIASES[@]}"; then
@@ -396,8 +494,15 @@ esac
 
 if [ "$FAILED" -gt 0 ]; then
   echo
-  echo "Stopping: $FAILED value(s) are wrong (not merely missing), so nothing was sent to Vercel."
-  exit 1
+  if [ "$DRY_RUN" = "1" ]; then
+    # A dry run changes nothing anywhere, so it keeps going and reports the rest. Stopping
+    # at the first bad value made the operator fix one variable, re-run, find the next --
+    # which is how a broken database URL hid a broken team id for a whole run.
+    warn "$FAILED value(s) are wrong (not merely missing); continuing so the rest of the report is complete"
+  else
+    echo "Stopping: $FAILED value(s) are wrong (not merely missing), so nothing was sent to Vercel."
+    exit 1
+  fi
 fi
 
 # The token is needed for the read below, not only for the write later, so it is
@@ -427,49 +532,7 @@ else
   if [ "$CODE" != "200" ]; then
     bad "listing the teams for this token returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
   else
-    selected="$(echo "$teams_json" | T="$VERCEL_TEAM_ID" S="$TEAM_SLUG" python3 -c '
-import json, os, sys
-"""-> "kind<TAB>id<TAB>name", one of:
-
-match    the stored VERCEL_TEAM_ID is the id of a team this token can see  -> use it
-slug     the stored value is that team*s slug* -- valid in the dashboard, rejected by
-         scoped API calls -- so the id is used instead, loudly
-stale    a value IS stored and matches nothing: it is reported as such, never quietly
-         replaced. The id/name fields carry the best alternative, if there is one.
-slugonly no value is stored and TEAM_SLUG names one of the visible teams
-single   no value is stored and exactly one team is visible
-none     nothing to resolve from
-
-An absent value is a lookup; a wrong value is a defect. Collapsing the two is how a
-stale team id survives a release, so they are kept apart here.
-"""
-try:
-    teams = json.load(sys.stdin).get("teams") or []
-except ValueError:
-    teams = []
-want = os.environ.get("T", "").strip()
-slug = os.environ.get("S", "").strip()
-by_id = next((t for t in teams if want and t.get("id") == want), None)
-by_slug = next((t for t in teams if want and t.get("slug") == want), None)
-named = next((t for t in teams if slug and t.get("slug") == slug), None)
-alternative = named or (teams[0] if len(teams) == 1 else None)
-def line(kind, team):
-    team = team or {}
-    print("\t".join([kind, team.get("id") or "",
-                      team.get("name") or team.get("slug") or ""]))
-if want and by_id:
-    line("match", by_id)
-elif want and by_slug:
-    line("slug", by_slug)
-elif want:
-    line("stale", alternative)
-elif named:
-    line("slugonly", named)
-elif len(teams) == 1:
-    line("single", teams[0])
-else:
-    print("none\t\t")
-' 2>/dev/null || printf 'none\t\t\n')"
+    selected="$(echo "$teams_json" | team_verdict "$VERCEL_TEAM_ID" "$TEAM_SLUG")"
     IFS=$'\t' read -r verdict team_id team_name <<<"$selected"
     case "$verdict" in
       match)

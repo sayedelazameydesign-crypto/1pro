@@ -42,6 +42,11 @@ jobs:
       # Vercel credentials, so it proves the checker's own logic -- above all that
       # a run which reached no API cannot report success.
       - run: python scripts/integrations_live_check.py --self-test
+      # The key-sync script is what carries the secrets into production, so its two
+      # offline guarantees are checked here too: the redactor passes text through
+      # while masking values, and a stored team value that is not this team's id is
+      # reported as a defect instead of being resolved around.
+      - run: scripts/vercel_env_sync.sh --self-test
 
   postgres:
     runs-on: ubuntu-latest
@@ -95,3 +100,8 @@ jobs:
       # Vercel credentials, so it proves the checker's own logic -- above all that
       # a run which reached no API cannot report success.
       - run: python scripts/integrations_live_check.py --self-test
+      # The key-sync script is what carries the secrets into production, so its two
+      # offline guarantees are checked here too: the redactor passes text through
+      # while masking values, and a stored team value that is not this team's id is
+      # reported as a defect instead of being resolved around.
+      - run: scripts/vercel_env_sync.sh --self-test
