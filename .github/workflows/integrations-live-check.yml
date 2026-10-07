@@ -8,13 +8,20 @@ name: Integrations live check (read-only, temporary)
 #
 # READ-ONLY. It runs `scripts/integrations_live_check.py` WITHOUT --allow-mutations,
 # so no workflow is dispatched and no production deployment is triggered; the two
-# write checks report SKIP and are expected to. The script itself changes nothing
-# upstream -- two GETs, one to api.github.com and one to api.vercel.com.
+# write checks report SKIP and are expected to. The probes are GETs.
+#
+# Why the checker runs twice:
+#   A) exactly as the operator's stored configuration describes it -- the token, the
+#      configured VERCEL_TEAM_ID, and the discovered project id. This is the verdict
+#      that matters: it is what production would get.
+#   B) with the team filter dropped. Diagnostic only. If A is 403 and B passes, the
+#      credential is fine and the *scope* is wrong -- the failure the mocked layers
+#      structurally cannot see, and the reason this checker exists.
+# Neither run is allowed to borrow the other's result.
 #
 # Output channel: the raw log is served from a host the sandbox cannot read, so every
-# finding is republished as a check-run annotation, exactly as prod-probe.yml does.
-# Annotations are scanned the same way the script's own transcript is: the checker
-# redacts, and Actions masks every value that came from `secrets.`.
+# finding is republished as a check-run annotation, as prod-probe.yml does. The
+# checker redacts its own transcript, and Actions masks every value from `secrets.`.
 #
 # Delete this file once the answer is known: it is not part of the product.
 on:
@@ -60,8 +67,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      # Names only, never values: this step exists so a SKIP can be attributed to a
-      # specific missing variable instead of a guess. Mirrors the naming report in
+      # Names only, never values: so a SKIP can be attributed to a specific missing
+      # variable instead of a guess. Mirrors the naming report in
       # scripts/vercel_env_sync.sh.
       - name: Resolve credentials by name (booleans only)
         id: resolve
@@ -70,7 +77,7 @@ jobs:
           : > /tmp/names.txt
           pick() { # logical_name, then alias values in preference order
             local name="$1"; shift
-            local i=0 value=""
+            local i=0
             for candidate in "$@"; do
               i=$((i + 1))
               if [ -n "$candidate" ]; then
@@ -87,35 +94,29 @@ jobs:
           pick VERCEL_TEAM_ID "${ALIAS_VERCEL_TEAM_ID_1:-}" "${ALIAS_VERCEL_TEAM_ID_2:-}"
           pick DEPLOY_HOOK_URL "${ALIAS_DEPLOY_HOOK_URL_1:-}" "${ALIAS_DEPLOY_HOOK_URL_2:-}"
           pick WAHA_OWNER_TOKEN "${ALIAS_WAHA_OWNER_TOKEN_1:-}"
-          # Vercel accepts a project *name* where an id is expected, and the sync
-          # script defaults to the name "cela", so a name here is not a failure.
           cat /tmp/names.txt
           printf '::warning title=credential-names::%s\n' "$(paste -sd'|' /tmp/names.txt)"
 
-      # The token is the credential under test, so its *validity and scope* are
-      # established before it is handed to the checker. A wrong-team token, or one
-      # minted without project read, answers 403 here -- and that is precisely the
-      # failure no mocked test can see. Each probe prints the status code and
-      # Vercel's own error code; the token itself is never printed.
-      #
-      # /v2/user is scope-free: it proves the token exists at all, so a later 403
-      # can be attributed to scope rather than to a dead credential.
+      # The token is the credential under test, so it is probed directly before it is
+      # handed to the checker. /v2/user is scope-free: it proves the credential is
+      # alive, so any later 403 can be attributed to scope rather than to a dead
+      # token. Every probe reports a status code and Vercel's own error code; the
+      # token itself is never printed.
       - name: Probe the Vercel token's validity and scope
         id: discover
         run: |
           set -uo pipefail
-          : > /tmp/discover.txt
+          : > /tmp/probe.txt
+          note() { printf '%s|' "$*" >> /tmp/probe.txt; printf '%s\n' "$*"; }
           if [ -z "${VERCEL_TOKEN:-}" ]; then
-            printf 'VERCEL_TOKEN absent: nothing to probe\n' >> /tmp/discover.txt
-            echo "VERCEL_TOKEN is not set; probing skipped"
+            note "VERCEL_TOKEN absent: nothing to probe"
             exit 0
           fi
-
           q() { python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$1"; }
 
-          probe() { # label url -- GET only, prints status + Vercel's error code
-            local label="$1" url="$2" code summary
-            code="$(curl -sS -o /tmp/probe.json -w '%{http_code}' --max-time 30 \
+          probe() { # label url outfile
+            local label="$1" url="$2" out="$3" code summary
+            code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 30 \
                       -H "Authorization: Bearer $VERCEL_TOKEN" "$url" || echo 000)"
             summary="$(jq -r '
               [ (if (.error|type) == "object" then (.error.message // .error.code)
@@ -124,85 +125,104 @@ jobs:
                 (if (.teams|type) == "array" then "teams=" + ([.teams[]? | (.slug//"?") + "=" + .id] | join(",")) else empty end),
                 (if (.projects|type) == "array" then "projects=" + ([.projects[]? | .name] | join(",")) else empty end),
                 (if (.deployments|type) == "array" then "deployments=" + ([.deployments[]? | .name] | unique | join(",")) else empty end)
-              ] | map(select(. != null and . != "")) | join(" ")' /tmp/probe.json 2>/dev/null)"
-            printf '%-34s http=%s %s\n' "$label" "$code" "${summary:-}"
-            printf '%s http=%s %s|' "$label" "$code" "$summary" >> /tmp/discover.txt
+              ] | map(select(. != null and . != "")) | join(" ")' "$out" 2>/dev/null)"
+            note "$label http=$code ${summary:-(no body)}"
           }
 
-          { printf 'team-config=%s\n' "${VERCEL_TEAM_ID:-(unset)}"; } >> /tmp/discover.txt
-          probe "GET /v2/user" "https://api.vercel.com/v2/user"
-          probe "GET /v2/teams" "https://api.vercel.com/v2/teams?limit=20"
-          probe "GET /v9/projects (no team)" "https://api.vercel.com/v9/projects?limit=20"
-          if [ -n "${VERCEL_TEAM_ID:-}" ]; then
-            probe "GET /v9/projects?teamId" "https://api.vercel.com/v9/projects?limit=20&teamId=$(q "$VERCEL_TEAM_ID")"
-            probe "GET /v9/projects?slug" "https://api.vercel.com/v9/projects?limit=20&slug=$(q "$VERCEL_TEAM_ID")"
+          note "configured VERCEL_TEAM_ID present=$([ -n "${VERCEL_TEAM_ID:-}" ] && echo yes || echo no)"
+          probe "GET /v2/user"                            "https://api.vercel.com/v2/user"                    /tmp/p_user.json
+          probe "GET /v2/teams"                           "https://api.vercel.com/v2/teams?limit=20"          /tmp/p_teams.json
+          probe "GET /v9/projects (personal scope)"       "https://api.vercel.com/v9/projects?limit=20"       /tmp/p_projects_personal.json
+          probe "GET /v6/deployments (personal scope)"    "https://api.vercel.com/v6/deployments?limit=3"     /tmp/p_deployments_personal.json
+
+          # The canonical id of the team the token *can* see, taken from /v2/teams.
+          # If the configured value 403s and this one 403s too, the configured value
+          # was never the problem -- the token's scope is.
+          canon="$(jq -r '.teams[]?.id' /tmp/p_teams.json 2>/dev/null | head -1)"
+          if [ -n "$canon" ]; then
+            probe "GET /v9/projects (canonical team)"     "https://api.vercel.com/v9/projects?limit=20&teamId=$(q "$canon")" /tmp/p_projects_canon.json
           fi
-          probe "GET /v6/deployments (no team)" "https://api.vercel.com/v6/deployments?limit=3"
           if [ -n "${VERCEL_TEAM_ID:-}" ]; then
-            probe "GET /v6/deployments?teamId" "https://api.vercel.com/v6/deployments?limit=3&teamId=$(q "$VERCEL_TEAM_ID")"
+            probe "GET /v9/projects (configured team)"    "https://api.vercel.com/v9/projects?limit=20&teamId=$(q "$VERCEL_TEAM_ID")" /tmp/p_projects_teamconf.json
+            probe "GET /v6/deployments (configured team)" "https://api.vercel.com/v6/deployments?limit=3&teamId=$(q "$VERCEL_TEAM_ID")" /tmp/p_deployments_teamconf.json
           fi
 
-          # Adopt an id only from the same scope the checker will query, so a PASS
-          # cannot come from a project the configured team does not contain.
-          code="$(curl -sS -o /tmp/projects.json -w '%{http_code}' --max-time 30 \
-                    -H "Authorization: Bearer $VERCEL_TOKEN" \
-                    "https://api.vercel.com/v9/projects?limit=20${VERCEL_TEAM_ID:+&teamId=$(q "$VERCEL_TEAM_ID")}" || echo 000)"
-          chosen="$(jq -r '.projects[]? | select(.name == "cela" or .name == "cela-umber" or .name == "1pro") | .id' /tmp/projects.json 2>/dev/null | head -1)"
-          [ -n "$chosen" ] || chosen="$(jq -r '.projects[0]?.id // empty' /tmp/projects.json 2>/dev/null)"
-          if [ -n "${VERCEL_PROJECT_ID:-}" ]; then
-            printf 'VERCEL_PROJECT_ID already set; discovery is informational only\n'
-          elif [ -n "$chosen" ]; then
-            printf 'VERCEL_PROJECT_ID=%s\n' "$chosen" >> "$GITHUB_ENV"
-            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code" >> /tmp/discover.txt
-            printf 'adopted project id from the configured scope (http=%s)\n' "$code"
-          else
-            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code" >> /tmp/discover.txt
-            printf 'no project id in the configured scope; Vercel read will report it missing\n'
-          fi
-
+          # The id of the production project, from the only scope that answered. Held
+          # separately from VERCEL_PROJECT_ID so run A can be told what the operator
+          # would have to store, without this file pretending it was stored.
+          chosen="$(jq -r '.projects[]? | select(.name == "cela" or .name == "cela-umber" or .name == "1pro") | .id' /tmp/p_projects_personal.json 2>/dev/null | head -1)"
+          [ -n "$chosen" ] || chosen="$(jq -r '.projects[0]?.id // empty' /tmp/p_projects_personal.json 2>/dev/null)"
+          {
+            printf 'DISCOVERED_PROJECT_ID=%s\n' "$chosen"
+            printf 'DISCOVERED_PROJECT_NAME=%s\n' "$(jq -r '.projects[]? | select(.name == "cela") | .name' /tmp/p_projects_personal.json 2>/dev/null | head -1)"
+            printf 'CANONICAL_TEAM_ID=%s\n' "$canon"
+          } >> "$GITHUB_ENV"
+          note "discovered project id for the personal-scope 'cela': ${chosen:-none}; canonical team id: ${canon:-none}"
 
       # Proves the checker before trusting its verdict, exactly as CI does.
       - name: Self-test the checker offline first
         run: python scripts/integrations_live_check.py --self-test
 
-      - name: Live reads (no mutations)
-        id: live
+      # Verdict A: what the operator's stored configuration yields, plus the project
+      # id discovery found. This is the line that decides the run.
+      - name: Run A -- as configured (token + VERCEL_TEAM_ID + discovered project)
+        id: runA
         continue-on-error: true
+        env:
+          VERCEL_PROJECT_ID: ${{ env.DISCOVERED_PROJECT_ID }}
         run: |
           set -uo pipefail
           status=0
-          python scripts/integrations_live_check.py > /tmp/live.txt 2> /tmp/live.err || status=$?
-          printf '%s\n' "$status" > /tmp/live.status
-          echo "--- stdout ---"; cat /tmp/live.txt
-          echo "--- stderr ---"; cat /tmp/live.err
-          echo "exit=$status"
+          python scripts/integrations_live_check.py > /tmp/liveA.txt 2> /tmp/liveA.err || status=$?
+          printf '%s\n' "$status" > /tmp/liveA.status
+          sed 's/^/A| /' /tmp/liveA.txt
+          cat /tmp/liveA.err
+
+      # Diagnostic B: the same credential, team filter dropped. Never overwrites A.
+      - name: Run B -- diagnostic (team filter dropped)
+        id: runB
+        continue-on-error: true
+        env:
+          VERCEL_PROJECT_ID: ${{ env.DISCOVERED_PROJECT_ID }}
+          VERCEL_TEAM_ID: ""
+        run: |
+          set -uo pipefail
+          status=0
+          python scripts/integrations_live_check.py > /tmp/liveB.txt 2> /tmp/liveB.err || status=$?
+          printf '%s\n' "$status" > /tmp/liveB.status
+          sed 's/^/B| /' /tmp/liveB.txt
+          cat /tmp/liveB.err
 
       - name: Publish findings as annotations (the only channel readable remotely)
         if: always()
         run: |
           set -uo pipefail
-          [ -f /tmp/live.txt ] || { echo "no report produced"; exit 0; }
-          # One annotation per result line, so each status is separately visible.
-          grep -E '^(GitHub|Vercel) ' /tmp/live.txt | while IFS= read -r line; do
-            title="$(printf '%s' "$line" | awk '{print $1"-"$2"-"$3"-"$4"-"$5}')"
-            if printf '%s' "$line" | grep -q ' FAIL '; then
-              printf '::warning title=%s::%s\n' "${title:0:64}" "$line"
-            else
-              printf '::notice title=%s::%s\n' "${title:0:64}" "$line"
-            fi
-          done
-          status="$(cat /tmp/live.status 2>/dev/null || echo '?')"
-          err="$(tr '\n' '|' < /tmp/live.err 2>/dev/null | head -c 700)"
-          disc="$(tr '\n' '|' < /tmp/discover.txt 2>/dev/null | head -c 900)"
-          printf '::warning title=live-check-exit::exit=%s stderr=%s\n' "$status" "${err:-(none)}"
-          [ -n "$disc" ] && printf '::warning title=vercel-discovery::%s\n' "$disc"
+          echo "--- scope probes ---"; cat /tmp/probe.txt 2>/dev/null || true
+          echo; echo "--- run A (as configured) ---"; cat /tmp/liveA.txt 2>/dev/null || true
+          echo; echo "--- run B (team filter dropped) ---"; cat /tmp/liveB.txt 2>/dev/null || true
+          printf '::warning title=scope-probes::%s\n' "$(head -c 1800 /tmp/probe.txt 2>/dev/null)"
+          printf '::warning title=run-A-as-configured-exit%s::%s\n' "$(cat /tmp/liveA.status 2>/dev/null)" "$(tr '\n' '|' < /tmp/liveA.txt 2>/dev/null | head -c 1500)"
+          printf '::warning title=run-B-team-filter-dropped-exit%s::%s\n' "$(cat /tmp/liveB.status 2>/dev/null)" "$(tr '\n' '|' < /tmp/liveB.txt 2>/dev/null | head -c 1500)"
+          printf '::warning title=run-A-stderr::%s\n' "$(tr '\n' '|' < /tmp/liveA.err 2>/dev/null | head -c 500)"
+          printf '::warning title=run-B-stderr::%s\n' "$(tr '\n' '|' < /tmp/liveB.err 2>/dev/null | head -c 500)"
 
-      - name: Fail the run when the checker did not pass
+      # A decides the run: if the operator's own scope cannot read, the configuration
+      # needs a change, and a green checkmark here would hide exactly that.
+      - name: Fail when run A (the configured scope) did not pass
         run: |
           set -uo pipefail
-          status="$(cat /tmp/live.status 2>/dev/null || echo 1)"
-          case "$status" in
-            0) echo "checker exit 0: every configured provider answered" ;;
-            2) echo "checker exit 2: nothing was verified -- no check reached an upstream API"; exit 1 ;;
-            *) echo "checker exit $status: at least one check FAILED"; exit 1 ;;
-          esac
+          a="$(cat /tmp/liveA.status 2>/dev/null || echo 9)"
+          b="$(cat /tmp/liveB.status 2>/dev/null || echo 9)"
+          echo "run A exit=$a  run B exit=$b"
+          if [ "$a" = 0 ]; then
+            echo "run A passed: the configured integration verifies end to end"
+            exit 0
+          fi
+          if [ "$b" = 0 ]; then
+            echo "run A failed but run B passed: the credential works and the configured"
+            echo "scope does not -- VERCEL_TEAM_ID is the variable to fix, or the token"
+            echo "must be re-minted inside that team instead of the personal account."
+            exit 1
+          fi
+          echo "neither run reached Vercel (A=$a, B=$b)"
+          exit 1
