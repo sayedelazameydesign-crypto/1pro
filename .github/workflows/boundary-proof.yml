@@ -1,0 +1,136 @@
+name: Boundary proof
+
+# Why this workflow exists, and why it is not part of `ci.yml`.
+#
+# The enforcement tests in `tests/test_agent_sandbox.py` need unprivileged user
+# namespaces. The shared `ubuntu-latest` runner refuses them -- the boundary
+# report step in `ci.yml` prints the exact error, `unshare: write failed
+# /proc/self/uid_map: Operation not permitted -- so CI proves the *refusal* path
+# and states as an annotation that it proved nothing about enforcement.
+#
+# Relaxing `kernel.apparmor_restrict_unprivileged_userns` on the shared runner
+# would turn that into real coverage, and it is refused deliberately: it widens
+# the attack surface of every job on that machine -- including jobs that run
+# repository code and pull requests -- for the sake of one test. A security
+# default is not a knob a test commit gets to turn.
+#
+# So the coverage lives here instead: one job, on a runner that is *allowed* to
+# build the boundary (self-hosted, or a dedicated container with a scoped
+# CAP_SYS_ADMIN and a short lifetime), running only the enforcement tests. It is
+# `workflow_dispatch` only -- never a silent gate that would sit pending on every
+# pull request -- and it fails on a *skip* as well as on a failure. A runner that
+# cannot build what it was hired to build has proven nothing, and a green tick
+# from it would be the same lie the main workflow now refuses to tell.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # The mutation check deliberately removes `chroot` from the sandbox's init
+      # and then asserts that the host-write test FAILS -- it runs a boundary that
+      # can really write to the host filesystem, which is how the R7.1 finding was
+      # reproduced. That belongs only on a machine you are willing to have written
+      # to (a disposable runner or a container), so it is opt-in per run.
+      mutation_check:
+        description: also run the mutation check (runs a sandbox that CAN write to the host)
+        type: boolean
+        default: false
+
+jobs:
+  enforcement:
+    runs-on: [self-hosted, boundary]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r backend/requirements.txt
+
+      # Fail here, not 40 tests later: if this runner cannot build the boundary
+      # there is nothing for this job to prove, and the reason is the useful part.
+      - name: This runner must be able to build the boundary
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("boundary      :", runner.name)
+          print("enforced      :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("fs isolated   :", runner.filesystem_isolated)
+          if not runner.supports():
+              reason = getattr(runner, "reason", "incomplete boundary")
+              print(f"::error title=this runner cannot build the boundary::{reason}")
+              raise SystemExit(1)
+          PY
+
+      - name: Enforcement tests, and a skip counts as a failure
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "tests.test_agent_sandbox"],
+                                  capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          print(output[-6000:])
+          skipped = int((re.search(r"skipped=(\d+)", output) or ["", "0"])[1])
+          if result.returncode:
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:6]:
+                  headline, _, body = block.partition("\n")
+                  print(f"::error title={headline}::{' '.join(body.split())[:600]}")
+          if skipped:
+              print(f"::error title=enforcement tests skipped here::{skipped} tests skipped on a "
+                    "runner that was supposed to allow them -- this run proves nothing, "
+                    "which is not the same as passing")
+          sys.exit(1 if (result.returncode or skipped) else 0)
+          PY
+
+      # The strongest evidence in the repository: that the host-write test is
+      # falsifiable. Without this, a test that always passes and a boundary that
+      # works look identical from the outside.
+      - name: Mutation check -- the host-write test must be able to fail
+        if: ${{ inputs.mutation_check }}
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys
+
+          sandbox = pathlib.Path("backend/agent/sandbox.py")
+          original = sandbox.read_text(encoding="utf-8")
+          victim = pathlib.Path("PWNED-BY-SANDBOX.txt")
+          backup = pathlib.Path("/tmp/sandbox.py.boundary-proof")
+          backup.write_text(original, encoding="utf-8")
+          try:
+              sabotaged = original.replace('"os.chroot(root);os.chdir(\'/workspace\')\\n"',
+                                           '"os.chdir(root+\'/workspace\')\\n"')
+              assert sabotaged != original, "the chroot step was not found to remove"
+              sandbox.write_text(sabotaged, encoding="utf-8")
+              result = subprocess.run(
+                  [sys.executable, "-m", "unittest",
+                   "tests.test_agent_sandbox.TheBoundaryHoldsAgainstRealCode"
+                   ".test_writing_a_host_path_cannot_touch_the_host"],
+                  capture_output=True, text=True)
+              print((result.stdout + result.stderr)[-2500:])
+              wrote = victim.exists()
+              if result.returncode == 0:
+                  print("::error title=the host-write test cannot fail::with the private "
+                        "root mutated it still passed, so it proves nothing")
+                  sys.exit(1)
+              if not wrote:
+                  print("::error title=the mutation did not reproduce the finding::the test "
+                        "failed, but no host file was written -- the mutation is not the one "
+                        "it is meant to reproduce")
+                  sys.exit(1)
+              print("::notice title=mutation check::the host-write test failed exactly as it "
+                    "must, and the file it wrote was removed afterwards")
+          finally:
+              sandbox.write_text(original, encoding="utf-8")
+              victim.unlink(missing_ok=True)
+          # The module must be byte-identical again, or the runner keeps a mutated
+          # boundary for whatever runs next.
+          if sandbox.read_text(encoding="utf-8") != backup.read_text(encoding="utf-8"):
+              print("::error title=the sandbox was not restored::restore it before trusting "
+                    "this runner again")
+              sys.exit(1)
+          PY
