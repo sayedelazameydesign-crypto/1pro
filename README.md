@@ -16,7 +16,8 @@ https://github.com/sayedelazameydesign-crypto/1pro
 و`WAHA_SECRET` و`WAHA_ALLOWED_ORIGINS` غير مضبوطة في بيئة Vercel. على Vercel يسكن
 SQLite في `/tmp` الزائل، فكل محادثة تضيع مع إعادة التدوير: **لا تعتبره نشرًا حقيقيًا قبل
 ضبط `DATABASE_URL`.** الطريق: `scripts/vercel_env_sync.sh` (أو لصق المتغيرات يدويًا) ثم
-إعادة نشر Pages، تفعيل Discussions، و**اختر LICENSE**. حالة CI الفعلية تُعرض في Actions.
+إعادة نشر Pages وتفعيل Discussions. كود المشروع مرخّص بموجب Apache-2.0
+(راجع `LICENSE`). حالة CI الفعلية تُعرض في Actions.
 
 ## نسختان واضحتان
 
@@ -444,7 +445,7 @@ python app.py
       و`WAHA_SECRET` و`WAHA_ALLOWED_ORIGINS` — عبر `scripts/vercel_env_sync.sh`. حتى
       ذلك الحين النشر يعمل بـSQLite زائل في `/tmp` وبلا نموذج (`ai: disabled`).
 - [ ] تفعيل Discussions أو إعداد نطاق مخصص.
-- [ ] اختيار ترخيص للكود قبل أي إعادة استخدام عامة.
+- [x] اختيار ترخيص Apache-2.0 للكود (راجع `LICENSE`).
 - [ ] Streaming للمحادثة نفسها، أدوات أكثر، ومهام أطول من عمر الطلب — كلها تحتاج
       طبقة تنفيذ خارج الخطة المجانية (انظر خارطة الطريق في `ARCHITECTURE.md`).
 
@@ -456,9 +457,9 @@ python app.py
 
 ## التراخيص والخصوصية
 
-لم يُختر ترخيص للأكواد في هذا القالب؛ اختر ترخيصاً مناسباً قبل نشره
-لإعادة الاستخدام العامة. خطوط Noto Sans Arabic لها ترخيص منفصل مرفق
-في `FONT-LICENSE.txt`. لا تُضمّن وثيقة Google أو المحادثات أو بيانات
+كود هذا المشروع مرخّص بموجب **Apache License, Version 2.0**؛ راجع ملف
+`LICENSE` للنص الكامل. خطوط Noto Sans Arabic لها ترخيص منفصل مرفق في
+`FONT-LICENSE.txt`. لا تُضمّن وثيقة Google أو المحادثات أو بيانات
 المراجعين أو أسرار الخدمة في المستودع.
 
 هذا القالب مُعدّ لهذا المشروع ولا يدّعي أنه SDK رسمي لـPromptQL.
