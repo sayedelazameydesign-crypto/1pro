@@ -39,6 +39,12 @@ from agent.store import Store                   # noqa: E402
 import rag_search                          # noqa: E402  (R2: lexical search over data/rag)
 from agent.runtime import Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
 from agent.tools import build_registry          # noqa: E402
+# Owner integrations (GitHub Actions + Vercel). Same rule as `agent/`: the package
+# knows neither Flask nor the network, so this module injects the config and the
+# transport and owns every HTTP-facing decision itself.
+import integrations.config as integrations_config      # noqa: E402
+from integrations import IntegrationService            # noqa: E402
+from integrations.http import IntegrationError         # noqa: E402
 
 # --- Deployment configuration -------------------------------------------------
 # Standalone mode (e.g. Render): set DATABASE_URL, GEMINI_API_KEY, WAHA_SECRET,
@@ -601,8 +607,161 @@ def origin_allowed(origin):
     return origin.rstrip("/") in ALLOWED_ORIGINS
 
 
+# --- Owner integrations: authentication, session, limits ----------------------
+# A separate identity from the visitor one on purpose. `verify_token` mints a
+# 400-day token for anyone who can reach /api/register; this surface can start a
+# production deployment, so it needs (a) a shared secret only the operator has,
+# (b) a much shorter session, (c) its own CORS list, and (d) a per-minute ceiling
+# on writes rather than the per-hour budget the chat path shares.
+INTEGRATIONS_CONFIG = integrations_config.load()
+INTEGRATIONS = IntegrationService(INTEGRATIONS_CONFIG)
+OWNER_TOKEN_PREFIX = "waha-owner"
+OWNER_MUTATIONS = {"github_dispatch", "vercel_deploy"}
+
+
+def issue_owner_token(now=None):
+    """HMAC-signed session, `waha-owner.<issued>.<signature>`, 8h by default.
+
+    Signed with the same WAHA_SECRET as the visitor token but under a different
+    message prefix, so a visitor token cannot be replayed here and vice versa.
+    """
+    issued = int(now if now is not None else time.time())
+    signature = hmac.new(WAHA_SECRET.encode(),
+                         f"{OWNER_TOKEN_PREFIX}|{issued}".encode(),
+                         hashlib.sha256).hexdigest()
+    return f"{OWNER_TOKEN_PREFIX}.{issued}.{signature}"
+
+
+def verify_owner_token(token):
+    """Return the session's issued-at, or None. Mirrors `verify_token`'s checks:
+    exact shape, clock-skew window, TTL, constant-time signature compare."""
+    parts = str(token or "").split(".")
+    if len(parts) != 3 or parts[0] != OWNER_TOKEN_PREFIX:
+        return None
+    try:
+        issued = int(parts[1])
+    except ValueError:
+        return None
+    ttl = INTEGRATIONS_CONFIG.owner.session_ttl_seconds
+    now = time.time()
+    if issued > now + 60 or issued < now - ttl:
+        return None
+    expected = hmac.new(WAHA_SECRET.encode(),
+                        f"{OWNER_TOKEN_PREFIX}|{issued}".encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(parts[2], expected):
+        return None
+    return issued
+
+
+def owner_csrf(issued):
+    """Bound to the session, not to a user id: there is exactly one owner, so a
+    constant CSRF token would outlive every rotation of the session itself."""
+    return hmac.new(WAHA_SECRET.encode(), f"owner-csrf|{issued}".encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def owner_origin_allowed(origin):
+    """Same-origin, or an explicit WAHA_OWNER_ALLOWED_ORIGINS entry. Does *not*
+    fall back to the visitor list -- see the admin CORS policy above."""
+    parts = urlsplit(origin)
+    if parts.netloc and parts.netloc == request.host:
+        return True
+    return origin.rstrip("/") in INTEGRATIONS_CONFIG.owner.allowed_origins
+
+
+def owner_identity():
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    issued = verify_owner_token(auth[7:].strip())
+    if issued is None:
+        return None
+    return {"issued": issued, "expires_in": max(
+        0, int(INTEGRATIONS_CONFIG.owner.session_ttl_seconds - (time.time() - issued)))}
+
+
+def owner_book_attempt(scope, window_seconds, limit):
+    """Book one attempt for `scope` and report whether the window is exhausted.
+
+    Shares the visitor `attempts` table with a distinct key prefix, so the owner
+    budget cannot be spent by chat traffic and the existing 24h pruning already
+    covers these rows.
+    """
+    key = f"{scope}:" + hashlib.sha256(client_ip().encode()).hexdigest()
+    now = time.time()
+    with connect() as db:
+        count = run(db, "SELECT COUNT(1) AS n FROM attempts WHERE user_id=? AND created_at>?",
+                    (key, now - window_seconds)).fetchone()["n"]
+        if count >= limit:
+            return True
+        run(db, "INSERT INTO attempts VALUES(?,?)", (key, now))
+        run(db, "DELETE FROM attempts WHERE created_at<?", (now - 86400,))
+    return False
+
+
+def owner_protect():
+    """The gate for every /api/owner/ path."""
+    g.visitor = None
+    g.owner = owner_identity()
+    if request.method == "OPTIONS":
+        return "", 204
+    origin = request.headers.get("Origin")
+    if origin and not owner_origin_allowed(origin):
+        return fail("طلب الإدارة من مصدر غير مسموح.", 403, "origin_rejected")
+    if request.path == "/api/owner/login":
+        return None
+    if not g.owner:
+        return fail("سجّل دخول المالك أولاً.", 401, "owner_sign_in_required")
+    if request.method == "GET":
+        return None
+    if not request.is_json:
+        return fail("يُقبل JSON فقط.", 415)
+    if not hmac.compare_digest(request.headers.get("X-Waha-CSRF", ""),
+                               owner_csrf(g.owner["issued"])):
+        return fail("حدّث الصفحة ثم حاول مرة أخرى.", 403, "csrf_rejected")
+    return None
+
+
+def owner_mutation(action, payload):
+    """Shared pre-flight for the two write endpoints: confirmation phrase, then
+    the 3/min write ceiling. Returns an error response, or None to proceed."""
+    expected = integrations_config.CONFIRM_PHRASES.get(action)
+    if not expected or str(payload.get("confirm", "")).strip() != expected:
+        return fail("التأكيد مفقود أو خاطئ؛ أرسل confirm بالنص المطلوب.",
+                    409, "confirmation_required")
+    if owner_book_attempt("ownw", 60, INTEGRATIONS_CONFIG.owner.write_limit_per_minute):
+        return fail("بلغت حدّ عمليات الكتابة (3 في الدقيقة). انتظر قليلاً.",
+                    429, "owner_write_rate_limit")
+    return None
+
+
+def integration_error_response(error):
+    """IntegrationError -> HTTP. The message is already redacted by the service,
+    so forwarding it is safe; the status is never invented from the upstream one."""
+    status = 502
+    if error.code == "not_configured":
+        status = 503
+    elif error.code in ("invalid_config", "invalid_request"):
+        status = 400
+    elif error.code == "host_not_allowed" or error.code == "insecure_target":
+        status = 400
+    elif error.code in ("github_unauthorized", "vercel_unauthorized"):
+        status = 502
+    elif error.code in ("github_unavailable", "vercel_unavailable",
+                        "upstream_unreachable", "upstream_timeout"):
+        status = 504
+    body, http_status = fail(error.message, status, error.code)
+    if error.retry_after is not None:
+        body.headers["Retry-After"] = str(error.retry_after)
+    return body, http_status
+
+
 @app.before_request
 def protect():
+    if request.path.startswith("/api/owner/"):
+        # The owner surface has its own, tighter, rule set -- see `owner_protect`.
+        return owner_protect()
     g.visitor = identity()
     if not request.path.startswith("/api/"):
         return None
@@ -626,7 +785,26 @@ def protect():
 @app.after_request
 def cors_headers(response):
     origin = request.headers.get("Origin", "")
-    if origin and origin_allowed(origin):
+    if not origin:
+        return response
+    if request.path.startswith("/api/owner/"):
+        # ADMIN CORS POLICY: deliberately narrower than the visitor policy. An
+        # owner-allowed origin list is separate from WAHA_ALLOWED_ORIGINS, so a
+        # Pages preview that is trusted for chat cannot call the deploy endpoints.
+        # A disallowed origin gets no Access-Control-Allow-Origin at all -- the
+        # browser then refuses the response, which is the only enforcement a
+        # cross-origin caller actually sees.
+        if not owner_origin_allowed(origin):
+            response.headers["Vary"] = "Origin"
+            return response
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = ("Authorization, Content-Type, "
+                                                            "X-Waha-CSRF")
+        response.headers["Access-Control-Max-Age"] = "600"
+        response.headers["Vary"] = "Origin"
+        return response
+    if origin_allowed(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Waha-CSRF"
@@ -1370,6 +1548,103 @@ def agent_memory_delete(memory_id):
         return fail("الملاحظة غير موجودة أو غير متاحة لك.", 404, "not_found")
     return jsonify(ok=True)
 
+
+
+# --- Owner integrations API ---------------------------------------------------
+# Everything below /api/owner/ is gated by `owner_protect` (owner session + admin
+# CORS + CSRF). The two POSTs additionally require the action's confirmation
+# phrase and share the 3-per-minute write ceiling.
+#
+# There is deliberately no /logout: the session is a stateless signed token, so
+# the server holds no revocation list to remove it from. Claiming otherwise would
+# be the same kind of false status the rest of this codebase refuses, so the page
+# simply discards the token and the session expires on its own after 8 hours.
+
+@app.get("/integrations")
+def integrations_page():
+    return send_file(ROOT / "static/integrations.html")
+
+
+@app.post("/api/owner/login")
+def owner_login():
+    limits = INTEGRATIONS_CONFIG.owner
+    if not limits.configured:
+        return fail("دخول المالك غير مُهيّأ على الخادم (WAHA_OWNER_TOKEN).",
+                    503, "not_configured")
+    if owner_book_attempt("ownl", 3600, limits.login_limit_per_hour):
+        return fail("محاولات دخول كثيرة من هذا العنوان. حاول بعد ساعة.",
+                    429, "owner_login_rate_limit")
+    data = request.get_json(silent=True) or {}
+    supplied = str(data.get("token", ""))
+    # compare_digest on unequal lengths is safe here; the point is that the
+    # comparison itself does not leak the prefix of the real token.
+    if not supplied or not hmac.compare_digest(supplied, INTEGRATIONS_CONFIG.owner.token):
+        app.logger.warning("owner login rejected from %s", client_ip())
+        return fail("رمز المالك غير صحيح.", 401, "owner_unauthorized")
+    token = issue_owner_token()
+    issued = int(token.split(".")[1])
+    return jsonify(token=token, csrf=owner_csrf(issued),
+                   expires_in=limits.session_ttl_seconds,
+                   integrations=INTEGRATIONS.status()), 201
+
+
+@app.get("/api/owner/session")
+def owner_session():
+    return jsonify(authenticated=True, expires_in=g.owner["expires_in"],
+                   csrf=owner_csrf(g.owner["issued"]),
+                   integrations=INTEGRATIONS.status())
+
+
+@app.get("/api/owner/integrations")
+def owner_integrations():
+    return jsonify(INTEGRATIONS.status())
+
+
+@app.get("/api/owner/integrations/github/runs")
+def owner_github_runs():
+    limit = request.args.get("limit", INTEGRATIONS_CONFIG.page_size, type=int) \
+        or INTEGRATIONS_CONFIG.page_size
+    branch = (request.args.get("branch") or "").strip()[:200] or None
+    try:
+        return jsonify(INTEGRATIONS.github_runs(limit=limit, branch=branch))
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.post("/api/owner/integrations/github/dispatch")
+def owner_github_dispatch():
+    data = request.get_json(silent=True) or {}
+    blocked = owner_mutation("github_dispatch", data)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(INTEGRATIONS.github_dispatch(
+            ref=str(data.get("ref") or "main").strip()[:200] or "main",
+            inputs=data.get("inputs") if isinstance(data.get("inputs"), dict) else None)), 202
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.get("/api/owner/integrations/vercel/deployments")
+def owner_vercel_deployments():
+    limit = request.args.get("limit", INTEGRATIONS_CONFIG.page_size, type=int) \
+        or INTEGRATIONS_CONFIG.page_size
+    try:
+        return jsonify(INTEGRATIONS.vercel_deployments(limit=limit))
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.post("/api/owner/integrations/vercel/deploy-hook")
+def owner_vercel_deploy_hook():
+    data = request.get_json(silent=True) or {}
+    blocked = owner_mutation("vercel_deploy", data)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(INTEGRATIONS.vercel_deploy()), 202
+    except IntegrationError as error:
+        return integration_error_response(error)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 260 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + فحوص البايت
+على `sqlite` و`postgres` معًا: 344 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -243,6 +243,54 @@ payload**؛ وما لم يُقرأ يُكتب «غير معروف» بلا لو�
 لا يستخدمها هذا التطبيق. عقدها: `tests/browser_components.test.mjs` (15 فحصًا) +
 `tests/test_components_contract.py`، وكلاهما في CI.
 
+## تكاملات المالك · `/integrations`
+
+صفحة إدارة واحدة خلف `/integrations`، تقرأ وتشغّل تكاملين فقط:
+
+| التكامل | قراءة | كتابة |
+|---|---|---|
+| GitHub Actions | `GET /api/owner/integrations/github/runs` — سجل التشغيلات | `POST /api/owner/integrations/github/dispatch` — تشغيل workflow |
+| Vercel | `GET /api/owner/integrations/vercel/deployments` — سجل النشرات | `POST /api/owner/integrations/vercel/deploy-hook` — نشر فعلي |
+
+**الأسرار لا تغادر الخادم.** `GITHUB_*` و`VERCEL_*` و`DEPLOY_HOOK_*` تُقرأ في
+`backend/integrations/config.py`، و`describe()` ينشر أسماء المتغيرات وحالاتها فقط، وما
+يظهر في الواجهة بصمة SHA-256 رباعية الأطراف للرمز لا الرمز. وكل رسالة خطأ قادمة من
+GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المتصفح، ومسار الخروج في مدقّق الطبقة
+الحية يعيد فحص المحضر كاملًا قبل طباعته.
+
+**الحماية:** جلسة موقّعة بـHMAC تنتهي بعد 8 ساعات · CSRF مرتبط بالجلسة · قائمة CORS
+خاصة بالإدارة · نص تأكيد لكل عملية كتابة · حدّ 3 عمليات كتابة في الدقيقة. التفصيل
+والأسباب في `ARCHITECTURE.md` §7.
+
+### التحقق على ثلاث طبقات
+
+| الطبقة | الملف | ما تثبته |
+|---|---|---|
+| Unit | `tests/test_integrations_core.py` (46) | الإعداد والمُحمِّر وحراس النقل والعميلان، بنقل مُزيَّف — بما فيها 401/403/422/429/5xx |
+| Integration | `tests/test_integrations_api.py` (32) | الحافة كلها عبر عميل Flask: من يُسمح له، من أي مصدر، بأي CSRF، كم مرة، وبعد أي تأكيد |
+| Live | `tests/test_integrations_live.py` (6) + `scripts/integrations_live_check.py` | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
+
+الطبقة الحية معطّلة افتراضيًا ولا تعمل في CI:
+
+```bash
+# القراءتان فقط (بلا تغيير في الحالة)
+GITHUB_TOKEN=… GITHUB_REPO=… VERCEL_TOKEN=… VERCEL_PROJECT_ID=… \
+  python scripts/integrations_live_check.py
+
+# والعمليتان الكتابيتان — تبدآن تشغيل CI فعليًا ونشرًا إنتاجيًا فعليًا
+python scripts/integrations_live_check.py --allow-mutations
+
+# تشغيل الاختبارات الحية
+WAHA_LIVE_INTEGRATIONS=1 python -m unittest tests.test_integrations_live
+
+# إثبات المدقّق نفسه بلا شبكة وبلا أسرار (هذا ما يشغّله CI)
+python scripts/integrations_live_check.py --self-test
+```
+
+العمليتان الكتابيتان خلف `--allow-mutations` عمدًا: «تحقق من رموزي» يجب ألا يكون أمرًا
+مدمّرًا. ولا تُنفَّذان من أي اختبار، لأن مجموعة اختبارات لا يجوز أن تقرر نشر إنتاج نيابةً
+عنك.
+
 ## النشر المستقل — Render + Neon + Gemini
 
 خيار النشر المجاني بدون بطاقة (تحقق من الأسعار قبل الاعتماد عليها؛
@@ -268,6 +316,16 @@ payload**؛ وما لم يُقرأ يُكتب «غير معروف» بلا لو�
 | `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
 | `WAHA_RAG_DIR` | اختياري (`<repo>/data/rag`) | دليل فهرس R1 الذي يقرأه `GET /api/search`. يُضبط في اختبار أو نسخة بديلة فقط؛ مساره الخاطئ يرجع `503 rag_index_missing` ولا يُبدَّل بنتائج مُختَرَعة |
+| `WAHA_OWNER_TOKEN` | سرّ تولّده أنت | يفتح `/integrations`. بلا قيمة تُرجع كل مسارات `/api/owner/*` ‏`503 not_configured` ولا يُقبل دخول أبدًا. ولّده بـ`openssl rand -hex 32` وضعه في Production فقط |
+| `GITHUB_TOKEN` | من GitHub | ‏PAT أو fine-grained بصلاحية `actions: read` للقراءة، و`actions: write` لتشغيل workflow. يبقى في الخادم ولا يصل إلى المتصفح |
+| `GITHUB_REPO` | `owner/name` | صيغة خاطئة تُرفض بـ`invalid_config` قبل أي نداء شبكة |
+| `GITHUB_WORKFLOW_ID` | اسم الملف أو رقمه | بدونه تبقى القراءة متاحة وتُعطَّل كتابة `dispatch` وحدها |
+| `VERCEL_TOKEN` | من Vercel | للقراءة فقط. لا يستطيع النشر: النشر يمرّ بالـhook |
+| `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` | من لوحة Vercel | ‏`TEAM_ID` مطلوب لحساب فرق؛ بدونه يُسأل الحساب الشخصي |
+| `DEPLOY_HOOK_URL` | من Vercel · Deploy Hooks | **الرابط نفسه هو السر**، فيُعامَل كسرّ: لا يُنشر ولا يُسجَّل. يجب أن يكون HTTPS على عنوان عام، وإلا رُفض بـ`insecure_target` أو`internal_address_blocked` |
+| `WAHA_OWNER_ALLOWED_ORIGINS` | اختياري | قائمة CORS **خاصة بصفحة الإدارة**، مستقلة عن `WAHA_ALLOWED_ORIGINS`. افتراضيًا: نفس المصدر فقط |
+| `WAHA_OWNER_SESSION_TTL` | `28800` (8 ساعات) | يُحصر بين 300 و86400 ثانية |
+| `WAHA_OWNER_WRITE_LIMIT_PER_MINUTE` | `3` | حدّ عمليات الكتابة، في عدّاد مستقل عن القراءة |
 | `AGENT_*` | اختياري | ميزانيات طبقة الوكيل وحدودها؛ الجدول الكامل في «طبقة الوكيل». قبل النشر شغّل `python scripts/deploy_doctor.py --target render` |
 | `PROMPTQL_PLATFORM_API_URL` + `WAHA_TRUST_PROMPTQL=1` | **وضع PromptQL فقط — لا تضبط أياً منهما في النشر المستقل** | ⚠️ مع `WAHA_TRUST_PROMPTQL=1` تُقرأ ترويسة `X-PromptQL-Visitor-Token` **بدون تحقق توقيع** (يُفحص `exp` و`sub` فقط، دالة `identity` في `backend/app.py`)، فأي زائر يستطيع تزوير الهوية وتجاوز cooldown/الحدود. كذلك `PROMPTQL_PLATFORM_API_URL` وحده يحوّل مسار AI إلى البوابة ويُلغي مسار `GEMINI_API_KEY`. في النشر المستقل: اترك المتغيرين غير مضبوطين |
 

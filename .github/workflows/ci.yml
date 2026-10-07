@@ -31,9 +31,17 @@ jobs:
       # The components panel is a status report only if a card cannot go green without
       # a payload; the harness drives the DOM-free module with plain objects.
       - run: node tests/browser_components.test.mjs
+      # The owner integrations console follows the same rule as the components
+      # panel: a card is green only because a payload said so. Without this the
+      # page could start claiming "ready" for a token the server never had.
+      - run: node tests/browser_integrations.test.mjs
       # The deploy doctor validates the operator's environment offline; CI only
       # proves the checker itself, since no real keys exist here.
       - run: python scripts/deploy_doctor.py --self-test
+      # Same reasoning for the live integrations checker: CI has no GitHub or
+      # Vercel credentials, so it proves the checker's own logic -- above all that
+      # a run which reached no API cannot report success.
+      - run: python scripts/integrations_live_check.py --self-test
 
   postgres:
     runs-on: ubuntu-latest
@@ -76,6 +84,14 @@ jobs:
       # The components panel is a status report only if a card cannot go green without
       # a payload; the harness drives the DOM-free module with plain objects.
       - run: node tests/browser_components.test.mjs
+      # The owner integrations console follows the same rule as the components
+      # panel: a card is green only because a payload said so. Without this the
+      # page could start claiming "ready" for a token the server never had.
+      - run: node tests/browser_integrations.test.mjs
       # The deploy doctor validates the operator's environment offline; CI only
       # proves the checker itself, since no real keys exist here.
       - run: python scripts/deploy_doctor.py --self-test
+      # Same reasoning for the live integrations checker: CI has no GitHub or
+      # Vercel credentials, so it proves the checker's own logic -- above all that
+      # a run which reached no API cannot report success.
+      - run: python scripts/integrations_live_check.py --self-test

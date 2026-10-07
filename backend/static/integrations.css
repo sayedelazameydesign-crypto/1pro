@@ -1,0 +1,112 @@
+/* Owner integrations console. Deliberately separate from styles.css: this is an
+ * admin surface with a different audience, and sharing the visitor cascade would
+ * couple a page that can deploy production to the marketing layout. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f5f2;
+  --panel: #ffffff;
+  --ink: #1b1a17;
+  --muted: #6b6862;
+  --line: #e2ded6;
+  --accent: #2f6f4f;
+  --ok: #2f6f4f;
+  --bad: #a33a2c;
+  --pending: #96690f;
+  --unknown: #6b6862;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14140f;
+    --panel: #1d1d18;
+    --ink: #f1efe9;
+    --muted: #a8a49a;
+    --line: #33322b;
+    --accent: #8fd3ab;
+    --ok: #8fd3ab;
+    --bad: #e08b7c;
+    --pending: #dfb45f;
+    --unknown: #a8a49a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 16px 64px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Noto Kufi Arabic", "Segoe UI", system-ui, sans-serif;
+  line-height: 1.7;
+}
+
+.shell { max-width: 940px; margin: 0 auto; }
+
+header.top {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  align-items: baseline; justify-content: space-between;
+  border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 20px;
+}
+header.top h1 { font-size: 1.35rem; margin: 0; }
+header.top .crumb { color: var(--muted); font-size: .8rem; }
+
+.notice {
+  border: 1px solid var(--line); border-inline-start: 4px solid var(--accent);
+  background: var(--panel); padding: 12px 14px; border-radius: 10px; margin: 0 0 18px;
+  font-size: .9rem; color: var(--muted);
+}
+
+form.login, section.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 18px; margin-bottom: 18px;
+}
+
+label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
+
+input[type=password], input[type=text], select {
+  width: 100%; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  font: inherit;
+}
+
+button {
+  font: inherit; cursor: pointer; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  padding: 9px 14px;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button[disabled] { opacity: .55; cursor: not-allowed; }
+
+.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; background: var(--bg); }
+.card h3 { margin: 0 0 6px; font-size: .95rem; }
+.card .state { font-size: .78rem; font-weight: 700; letter-spacing: .02em; }
+.card .meta { font-size: .75rem; color: var(--muted); margin-top: 6px; word-break: break-word; }
+.card .state[data-tone=READY] { color: var(--ok); }
+.card .state[data-tone=MISSING] { color: var(--pending); }
+.card .state[data-tone=UNKNOWN] { color: var(--unknown); }
+
+table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+th, td { text-align: start; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: .75rem; }
+td .tone { font-weight: 700; }
+td .tone[data-tone=OK] { color: var(--ok); }
+td .tone[data-tone=BAD] { color: var(--bad); }
+td .tone[data-tone=PENDING] { color: var(--pending); }
+td .tone[data-tone=UNKNOWN] { color: var(--unknown); }
+td a { color: var(--accent); text-decoration: none; }
+
+.mutation { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 12px; }
+.mutation .field { flex: 1 1 200px; }
+.hint { font-size: .75rem; color: var(--muted); margin-top: 6px; }
+
+pre.out {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 9px;
+  padding: 10px; font-size: .75rem; overflow-x: auto; margin: 12px 0 0;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+.empty { color: var(--muted); font-size: .85rem; padding: 8px 0; }
+footer.foot { color: var(--muted); font-size: .75rem; margin-top: 26px; }
