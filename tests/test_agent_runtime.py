@@ -658,6 +658,40 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(versions[0]["version"], 2)
         self.assertEqual(versions[1]["version"], 1)
 
+    def test_connectors_and_permissions(self):
+        resp = self.client.get("/api/agent/connectors", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        conns = resp.get_json()["connectors"]
+        self.assertTrue(len(conns) >= 3)
+        github_conn = next(c for c in conns if c["id"] == "github")
+        self.assertFalse(github_conn["permissions"]["files"])
+
+        resp = self.client.patch("/api/agent/connectors/github/permissions",
+                                 data=json.dumps({"permissions": {"files": True, "messages": False, "external_actions": True}}),
+                                 headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        updated = resp.get_json()["connector"]
+        self.assertTrue(updated["permissions"]["files"])
+        self.assertTrue(updated["permissions"]["external_actions"])
+        self.assertFalse(updated["permissions"]["messages"])
+
+        resp = self.client.patch("/api/agent/connectors/unknown_conn/permissions",
+                                 data=json.dumps({"files": True}),
+                                 headers=self.headers())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_browser_takeover_stub(self):
+        task_id = backend.agent_store.create_task(self.user, "مهمة تحكم متصفح", "gemini", "model", time.time() + 60)
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/takeover", headers=self.headers())
+        self.assertEqual(resp.status_code, 501)
+        self.assertEqual(resp.get_json()["code"], "not_implemented")
+
+        other = "u_" + os.urandom(10).hex()
+        other_headers = {"Origin": ORIGIN, "X-PromptQL-Visitor-Token": identity(other),
+                         "X-Waha-CSRF": backend.csrf_for(other), "Content-Type": "application/json"}
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/takeover", headers=other_headers)
+        self.assertEqual(resp.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
