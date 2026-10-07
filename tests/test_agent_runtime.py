@@ -532,6 +532,43 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(backend.agent_store.task_status(task_id), "interrupted")
         self.assertEqual(backend.agent_store.get_task(task_id)["error_code"], "interrupted")
 
+    def test_projects_crud_isolation_and_task_linkage(self):
+        resp = self.client.post("/api/agent/projects",
+                                data=json.dumps({"name": "مشروع بايثون", "instructions": "تعليمات خاصة", "context": "سياق المشروع"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 201)
+        proj = resp.get_json()["project"]
+        self.assertEqual(proj["name"], "مشروع بايثون")
+        proj_id = proj["id"]
+
+        resp = self.client.get("/api/agent/projects", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        projects = resp.get_json()["projects"]
+        self.assertTrue(any(p["id"] == proj_id for p in projects))
+
+        self.use_script([plan(["احسب"]), action("calculator", expression="5+5"), final("10"), final("r")])
+        resp = self.create(goal="احسب خمسة زائد خمسة", project_id=proj_id)
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()["task"]["id"]
+        self.assertEqual(resp.get_json()["task"]["project_id"], proj_id)
+        self.wait(task_id)
+
+        resp = self.client.get(f"/api/agent/projects/{proj_id}", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        detail = resp.get_json()
+        self.assertEqual(detail["project"]["id"], proj_id)
+        self.assertEqual(len(detail["tasks"]), 1)
+        self.assertEqual(detail["tasks"][0]["id"], task_id)
+
+        other = "u_" + os.urandom(10).hex()
+        other_headers = {"Origin": ORIGIN, "X-PromptQL-Visitor-Token": identity(other),
+                         "X-Waha-CSRF": backend.csrf_for(other), "Content-Type": "application/json"}
+        self.assertEqual(self.client.get(f"/api/agent/projects/{proj_id}", headers=other_headers).status_code, 404)
+        resp_bad = self.client.post("/api/agent/tasks",
+                                    data=json.dumps({"goal": "هدف مستخدم آخر", "project_id": proj_id}),
+                                    headers=other_headers)
+        self.assertEqual(resp_bad.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
