@@ -84,7 +84,44 @@ curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جس�
 على `inline` لا يرجّ سكربت السموك الطابور: المهمة تنتهي داخل الطلب، فيقرأ الحالة من سجل الأحداث.
 `ai_enabled=false` فشل متوقّع إن لم يُضبط المفتاح.
 
-## 4) ربط الواجهة
+## 4) المفاتيح: من أسرار GitHub إلى Vercel
+
+Vercel لا يقرأ أسرار GitHub، فالنقل يحتاج وسيطًا يعمل في مكان يرى فيه الاثنان.
+الوسيط هو `scripts/vercel_env_sync.sh` عبر workflow **Sync production keys to Vercel**
+(تشغيل يدوي: Actions → Run workflow). يفعل أربعة أشياء بالترتيب:
+
+1. يقرأ الأسرار من بيئة المُشغِّل (المكان الوحيد الذي تُكشف فيه قيم الأسرار).
+2. يتحقق من كل قيمة فعليًا: اتصال PostgreSQL حقيقي بـ`SELECT 1`، وطلب حقيقي إلى
+   Google يثبت أن مفتاح Gemini مقبول، وفحص طول `WAHA_SECRET`، وأن
+   `WAHA_ALLOWED_ORIGINS` يحتوي أصل Pages.
+3. يكتب المتغيّرات على مشروع Vercel (Production) ويكرّر الكتابة بأمان (upsert).
+4. يعيد نشر الإنتاج ثم يفحص الحيّ: `/health` (`ai:gemini` و`database:postgres`)،
+   و`/readyz`، وترويسة CORS لأصل Pages.
+
+**لا تُطبع أي قيمة أبدًا**: كل سطر يمرّ عبر مُنقِّح يحوّل القيمة إلى `***`، والقيمة
+تُقرأ من متغيّر البيئة لا من وسيط سطر أوامر. الأسماء التي يبحث عنها، بالترتيب:
+
+| المتغيّر | الأسماء المقبولة | لماذا |
+|---|---|---|
+| رابط Neon | `DATABASE_URL` ثم `NEON_DATABASE_URL` · `POSTGRES_URL` · `DB_URL` … (15 اسمًا) | بدونه يبقى SQLite على `/tmp` وتضيع الجلسات |
+| مفتاح Gemini | `GEMINI_API_KEY` ثم `GOOGLE_API_KEY` · `GEMINI_KEY` … | بدونه `ai:disabled` والوكيل يرفض كل مهمة |
+| سر الجلسات | `WAHA_SECRET` أو `WAHA_APP_SECRET` | بدونه يبطل Vercel جلسات الزوار عند كل إعادة تدوير |
+| أصل الصفحة | `WAHA_ALLOWED_ORIGINS` أو `ALLOWED_ORIGINS` | وإن غابا يُستخدم أصل Pages افتراضيًا |
+| رمز Vercel | `VERCEL_TOKEN` أو `VERCEL_API_TOKEN` | **إلزامي للكتابة على Vercel**؛ بدونه يتوقف السكربت بخطوة واضحة ولا يلمس Vercel |
+
+### إضافة `VERCEL_TOKEN` (مرة واحدة)
+
+1. [vercel.com/account/tokens](https://vercel.com/account/tokens) → Create Token →
+   النطاق (Scope) = الفريق المالك للمشروع (`celia-fashion's projects`) → أنشئه.
+2. GitHub → المستودع → Settings → Secrets and variables → Actions →
+   New repository secret → الاسم **`VERCEL_TOKEN`** حرفيًا → الصق الرمز.
+3. Actions → **Sync production keys to Vercel** → Run workflow.
+
+> بديل بلا رمز: الصق القيم بنفسك في Vercel → Project → Settings → Environment
+> Variables (Production) ثم اعمل Redeploy. الأول أصحّ لأن GitHub يبقى مصدر الحقيقة
+> الوحيد، ولأن السكربت يتحقق من كل قيمة قبل أن تصل الإنتاج.
+
+## 5) ربط الواجهة
 
 1. ضع عنوان Vercel في `docs/data/config.json` → `api_base` (بدون مسار).
 2. commit + PR → CI (فهرس + اختبارات + `node --check`) → merge.
@@ -92,7 +129,7 @@ curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جس�
 4. افتح الصفحة: مساحة العمل → لوحة «مكوّنات النظام» يجب أن تعرض `inline` وبطاقات حيّة من
    `/health` و`/api/agent/config`، وبطاقة «قاعدة البيانات: Postgres (Neon)».
 
-## 5) سلوك الإجابة على هذا النشر: كتابة تدريجية وبطاقات مصادر
+## 6) سلوك الإجابة على هذا النشر: كتابة تدريجية وبطاقات مصادر
 
 الردّ في المحادثة يُكتب تدريجيًا أمام الزائر بدل الظهور دفعة واحدة، ثم تُعلَّق تحته
 حتى 3 بطاقات مصادر من فهرس R1 عبر `GET /api/search`. ما يهمّك كناشر على Hobby:

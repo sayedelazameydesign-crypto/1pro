@@ -7,8 +7,8 @@ name: Sync production keys to Vercel
 # redeploys, and verifies the live service. It never prints a value: the script it
 # calls redacts every line it emits (see scripts/vercel_env_sync.sh).
 #
-# Nothing of the repository is modified. Run it by hand (Actions -> this workflow
-# -> Run workflow), or keep the temporary push trigger below until it lands on main.
+# Nothing of the repository is modified. Run it by hand: Actions -> Sync production
+# keys to Vercel -> Run workflow. Documented in DEPLOY-VERCEL.md -> "المفاتيح".
 on:
   workflow_dispatch:
     inputs:
@@ -16,11 +16,6 @@ on:
         description: "Validate the secrets only; change nothing on Vercel"
         type: boolean
         default: false
-  # TEMPORARY: lets this branch prove the flow before the file reaches main.
-  # Remove this block (and the branch guard is then moot) when merging to main.
-  push:
-    branches:
-      - arena/79021108-1pro
 
 permissions:
   contents: read
