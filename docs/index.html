@@ -20,6 +20,7 @@
       <button class="nav-item active" data-view="discover"><span data-icon="compass"></span>اكتشف المهارات<span class="nav-count">06</span></button>
       <button class="nav-item" data-view="library"><span data-icon="book"></span>مكتبتي</button>
       <button class="nav-item" data-view="chats"><span data-icon="message"></span>محادثاتي</button>
+      <button class="nav-item" data-view="assistant"><span data-icon="spark"></span>مساعدك الذكي</button>
       <button class="nav-item" data-view="workspace"><span data-icon="spark"></span>مساحة العمل<span class="nav-count">AGENT</span></button>
     </nav>
     <div class="side-note"><span class="tiny-label">خطوة واحدة كل يوم</span><div class="little-orbit" aria-hidden="true"><span data-icon="spark"></span></div><p>التعلّم يبدأ بسؤال.<br>خلّي فضولك يقودك.</p><span class="small-rule"></span><small>عينات عربية · تجربة MVP</small></div>
@@ -49,6 +50,17 @@
       <section id="chats-view" class="hidden">
         <div class="section-heading chats-heading"><div><div class="eyebrow small">مساحة للعودة إلى أفكارك</div><h1>محادثاتي</h1><p>تُحفظ تلقائياً. اختر محادثة لتكمل من حيث توقفت.</p></div></div>
         <div class="chats-grid" id="chats-list"></div>
+      </section>
+      <section id="assistant-view" class="hidden">
+        <div class="section-heading chats-heading"><div><div class="eyebrow small">اسأل، اكتب، خطّط، وتعلّم</div><h1>محادثة مع مساعدك الذكي</h1><p>محادثة عامة داخل واحة. المساعد لا يصل إلى جهازك أو ملفاتك ولا ينفّذ إجراءات نيابةً عنك.</p></div></div>
+        <div class="assistant-start-card">
+          <div class="assistant-start-copy"><span class="skill-icon mint"><span data-icon="spark"></span></span><div><strong>ابدأ محادثة جديدة</strong><p>اسأل عن أي موضوع. تحفظ المحادثة في حسابك عند ربط خادم واحة.</p></div></div>
+          <div class="assistant-controls"><label class="assistant-provider-label" for="assistant-provider-choice">الموفّر</label><select id="assistant-provider-choice" aria-label="موفّر المساعد الذكي"><option value="gemini">Gemini</option></select><button id="start-assistant-chat" class="primary" type="button" disabled>محادثة جديدة<span data-icon="arrow"></span></button></div>
+        </div>
+        <div id="assistant-error" class="inline-error hidden" role="alert"></div>
+        <div class="section-heading assistant-history-heading"><div><div class="eyebrow small">مساحة للعودة إلى أفكارك</div><h2>محادثات المساعد</h2></div></div>
+        <div class="chats-grid" id="assistant-chats-list" aria-live="polite"></div>
+        <p class="ai-disclaimer">تُرسل رسائلك وسياق المحادثة إلى Gemini لإنشاء الرد. قد تخطئ الإجابات؛ لا تشارك كلمات مرور أو مفاتيح API.</p>
       </section>
       <section id="workspace-view" class="hidden">
         <div class="section-heading chats-heading"><div><div class="eyebrow small">من سؤال إلى نتيجة معلّمة</div><h1>مساحة العمل</h1><p>اكتب هدفك، تخطّط الواحة خطواتها، تستخدم الأدوات عند الحاجة، وتعرض الناتج خطوة بخطوة.</p></div><span class="count-label" id="agent-state-chip">…</span></div>
@@ -160,7 +172,7 @@
   </main>
 </div>
 <dialog id="skill-dialog"><div class="dialog-header"><span class="tiny-label">مساحتك للتعلّم</span><button class="icon-button close-dialog" aria-label="إغلاق"><span data-icon="close"></span></button></div><div id="skill-detail"></div><div class="dialog-actions"><button id="install-skill" class="secondary"><span data-icon="plus"></span>أضف لمكتبتي</button><button id="download-skill" class="secondary"><span data-icon="download"></span>تنزيل JSON</button></div><h3 class="mode-title">كيف تحب تبدأ؟</h3><div class="mode-options"><label><input type="radio" name="mode" value="guided" checked><span data-icon="book"></span><strong>شرح موجه</strong><small>فكرة، مثال، وخطوات</small></label><label><input type="radio" name="mode" value="exercise"><span data-icon="pen"></span><strong>تمرين</strong><small>جرّب بنفسك</small></label><label><input type="radio" name="mode" value="quiz"><span data-icon="spark"></span><strong>اختبار</strong><small>اختبر فهمك</small></label></div><div id="dialog-error" class="inline-error hidden" role="alert"></div><button id="start-session" class="primary full">ابدأ جلسة تعلّم<span data-icon="arrow"></span></button><p class="dialog-footnote">يُنشئ محادثة محفوظة ويضيف المهارة إلى مكتبتك. لا يبدأ طلب AI حتى ترسل رسالتك.</p></dialog>
-<dialog id="help-dialog"><div class="dialog-header"><h2>أهلاً بك في واحة</h2><button class="icon-button close-dialog" aria-label="إغلاق"><span data-icon="close"></span></button></div><ol class="help-steps"><li><strong>اكتشف مهارة</strong><p>ابحث أو فلتر حسب الفئة والمستوى. المهارات الست عينات للتجربة.</p></li><li><strong>حمّل بيانات المهارة</strong><p>تنزيل JSON يعمل دون تسجيل. أزرار الحفظ والتعلّم غير مُفعّلة في نسخة Pages.</p></li><li><strong>استخدم التطبيق الكامل</strong><p>خادم واحة المستقل يدعم المحادثات الخاصة والحفظ وGemini ومساحة عمل الوكيل؛ Pages نفسها لا تستضيف Python أو SQLite.</p></li></ol><div class="help-notice">تطبيق مستقل عن صفحة مراجعة الوثيقة؛ لا يقرأ Google Docs ولا يعدّلها. لا يشغّل الكود أو يحمّل إضافات تنفيذية. تنزيل المهارة يعني تنزيل بياناتها وقالب توجيهها فقط.</div><button class="primary full close-dialog">جاهز، لنبدأ</button></dialog>
+<dialog id="help-dialog"><div class="dialog-header"><h2>أهلاً بك في واحة</h2><button class="icon-button close-dialog" aria-label="إغلاق"><span data-icon="close"></span></button></div><ol class="help-steps"><li><strong>اكتشف مهارة</strong><p>ابحث أو فلتر حسب الفئة والمستوى. المهارات الست عينات للتجربة.</p></li><li><strong>حمّل بيانات المهارة</strong><p>تنزيل JSON يعمل دون تسجيل. أزرار الحفظ والتعلّم غير مُفعّلة في نسخة Pages.</p></li><li><strong>اسأل مساعدك الذكي</strong><p>من القائمة الجانبية ابدأ محادثة عامة تحفظ على خادم واحة المتصل؛ لا يصل المساعد إلى جهازك أو ملفاتك.</p></li><li><strong>استخدم التطبيق الكامل</strong><p>خادم واحة المستقل يدعم المحادثات الخاصة والحفظ وGemini ومساحة عمل الوكيل؛ Pages نفسها لا تستضيف Python أو SQLite.</p></li></ol><div class="help-notice">تطبيق مستقل عن صفحة مراجعة الوثيقة؛ لا يقرأ Google Docs ولا يعدّلها. لا يشغّل الكود أو يحمّل إضافات تنفيذية. تنزيل المهارة يعني تنزيل بياناتها وقالب توجيهها فقط.</div><button class="primary full close-dialog">جاهز، لنبدأ</button></dialog>
 <div class="toast hidden" id="toast" role="status"></div>
 </body>
 </html>

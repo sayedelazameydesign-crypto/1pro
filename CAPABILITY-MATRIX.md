@@ -106,7 +106,7 @@
 
 | # | القدرة | C | M | الحالة | الدليل | الأولوية |
 |---|---|---|---|---|---|---|
-| C31 | جلسات محادثة محفوظة | ✅ | ✅ | Implemented | `route:/api/sessions` | P0 |
+| C31 | جلسات محادثة مهارية وعامة محفوظة | ✅ | ✅ | Implemented | `route:/api/sessions`, `file:tests/test_waha.py` | P0 |
 | C32 | تصدير محادثة | ✅ | ✅ | Implemented | `route:/api/sessions/<sid>/export` | P2 |
 | C33 | كتالوج مهارات + تثبيت + تنزيل | ✅ | ✅ | Implemented | `route:/api/skills`, `route:/api/skills/<skill_id>/install` | P1 |
 | C34 | أنواع Artifacts (html/css/js/md/json) | ✅ | ✅ | Implemented | `file:backend/agent/tools.py` | P0 |

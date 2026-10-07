@@ -346,8 +346,8 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_rag_index.py` | 38 |
 | `tests/test_rag_search.py` | 29 |
 | `tests/test_vercel_wrapper.py` | 5 |
-| `tests/test_waha.py` | 23 |
-| **المجموع** | **451** |
+| `tests/test_waha.py` | 24 |
+| **المجموع** | **452** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
 فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
