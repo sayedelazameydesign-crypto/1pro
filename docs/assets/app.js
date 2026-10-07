@@ -533,20 +533,37 @@ function renderAgentApprovals(task){
  const pending=(task.calls||[]).filter(c=>c.status==='awaiting_approval');
  if(!pending.length){box.classList.add('hidden');box.innerHTML='';return;}
  box.classList.remove('hidden');
- box.innerHTML=pending.map(call=>`<div class="agent-approval"><div><strong>إجراء يحتاج موافقتك</strong><p><code>${escapeHtml(call.tool)}</code> <span>بوسائط: ${escapeHtml(JSON.stringify(call.args).slice(0,180))}</span></p><small>لن يُنفَّذ شيء قبل ردّك، وتنتهي المهلة تلقائياً فيُلغى الطلب.</small></div><div class="agent-approval-actions"><button class="primary" data-approve="${escapeHtml(call.id)}" data-value="1">سماح</button><button class="secondary" data-approve="${escapeHtml(call.id)}" data-value="0">رفض</button></div></div>`).join('');
+ box.innerHTML=pending.map(call=>`
+  <div class="agent-approval" data-call-id="${escapeHtml(call.id)}">
+    <div class="approval-header">
+      <span class="badge ${call.tool==='web_fetch'?'badge-external':'badge-warn'}">${escapeHtml(call.tool)}</span>
+      <strong>إجراء يحتاج موافقتك</strong>
+    </div>
+    <div class="approval-body">
+      <p>الأداة: <code class="ltr" dir="ltr">${escapeHtml(call.tool)}</code></p>
+      <div class="approval-args">الوسائط: <pre class="ltr" dir="ltr"><code>${escapeHtml(JSON.stringify(call.args, null, 2).slice(0, 300))}</code></pre></div>
+      <small>لن يُنفَّذ شيء قبل ردّك، وتنتهي المهلة تلقائياً فيُلغى الطلب.</small>
+    </div>
+    <div class="agent-approval-actions">
+      <button class="primary tiny-btn" data-approve="${escapeHtml(call.id)}" data-decision="allow_once" type="button">سماح مرة واحدة</button>
+      <button class="primary tiny-btn alt-btn" data-approve="${escapeHtml(call.id)}" data-decision="allow_task" type="button">سماح طوال المهمة</button>
+      <button class="secondary tiny-btn danger-btn" data-approve="${escapeHtml(call.id)}" data-decision="deny" type="button">رفض</button>
+    </div>
+  </div>`).join('');
 }
 function renderAgentArtifacts(task){
  const box=$('agent-artifacts');
  const list=task.artifacts||[];
  if(!list.length){box.innerHTML='<p class="agent-empty">لا ملفات في هذه المهمة بعد.</p>';return;}
- box.innerHTML=list.map(a=>`<button class="agent-artifact ${agent.artifact&&agent.artifact.id===a.id?'active':''}" data-artifact="${a.id}"><span data-icon="layers"></span><div><strong>${escapeHtml(a.name)}</strong><small>${escapeHtml(a.kind)} · ${a.bytes} حرفاً</small></div></button>`).join('');
+ box.innerHTML=list.map(a=>`<button class="agent-artifact ${agent.artifact&&agent.artifact.id===a.id?'active':''}" data-artifact="${a.id}"><span data-icon="layers"></span><div><strong class="ltr" dir="ltr">${escapeHtml(a.name)}</strong><small>${escapeHtml(a.type||a.kind)} · v${a.version||1} · ${a.bytes} حرفاً</small></div></button>`).join('');
  injectIcons();
+ renderArtifactTabContent();
 }
-async function decideApproval(callId,approve){
+async function decideApproval(callId,decision){
  if(!agent.task)return;
  try{
-  await api('/api/agent/tasks/'+agent.task.id+'/approve',{call_id:callId,approve});
-  toast(approve?'سُمح بتنفيذ الأداة.':'رُفض تنفيذ الأداة.');
+  await api('/api/agent/tasks/'+agent.task.id+'/approve',{approval_id:callId,decision:decision});
+  toast(decision==='deny'?'رُفض تنفيذ الأداة.':(decision==='allow_task'?'سُمح بالأداة طوال المهمة.':'سُمح بتنفيذ الأداة.'));
   await pollAgent();
  }catch(error){toast(error.message);}
 }
@@ -567,11 +584,84 @@ async function deleteAgentTask(){
   toast('حُذفت المهمة.');
  }catch(error){toast(error.message);}
 }
+let currentArtifactTab='preview';
+let artifactVersions=[];
+
+function switchArtifactTab(tab){
+ currentArtifactTab=tab;
+ document.querySelectorAll('#artifact-tabs .tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+ ['preview','code','files','changes'].forEach(t=>{
+  const pane=$('tab-pane-'+t);
+  if(pane)pane.classList.toggle('hidden',t!==tab);
+ });
+ renderArtifactTabContent();
+}
+
+async function loadArtifactVersions(artifactId){
+ if(!artifactId||!backend.base){artifactVersions=[];renderArtifactVersionBar();return;}
+ try{
+  const data=await api('/api/agent/artifacts/'+artifactId+'/versions');
+  artifactVersions=data.versions||[];
+ }catch(e){artifactVersions=[];}
+ renderArtifactVersionBar();
+}
+
+function renderArtifactVersionBar(){
+ const tag=$('artifact-version-tag');
+ const select=$('artifact-version-select');
+ if(!agent.artifact){
+  if(tag)tag.textContent='الإصدار: v1';
+  if(select)select.classList.add('hidden');
+  return;
+ }
+ const ver=agent.artifact.version||1;
+ if(tag)tag.textContent=`الإصدار: v${ver}`;
+ if(select&&artifactVersions.length>1){
+  select.classList.remove('hidden');
+  select.innerHTML=artifactVersions.map(v=>`<option value="${v.version}" ${v.version===ver?'selected':''}>v${v.version} (${escapeHtml(v.created_by||'agent')}) - ${new Date(v.created_at*1000).toLocaleTimeString('ar-EG')}</option>`).join('');
+ }else if(select){
+  select.classList.add('hidden');
+ }
+}
+
+function renderArtifactTabContent(){
+ const art=agent.artifact;
+ if(currentArtifactTab==='code'){
+  const codeView=$('artifact-code-view');
+  if(codeView)codeView.textContent=art?art.content:'لم يُختر ملف بعد.';
+  renderArtifactVersionBar();
+ }else if(currentArtifactTab==='files'){
+  const filesList=$('artifact-files-list');
+  const list=(agent.task&&agent.task.artifacts)||(art?[art]:[]);
+  if(filesList){
+   filesList.innerHTML=list.length?list.map(a=>`<li class="file-item ${art&&art.id===a.id?'active':''}" data-artifact="${a.id}"><span data-icon="layers"></span><div class="file-info"><strong class="ltr" dir="ltr">${escapeHtml(a.name)}</strong><small>${escapeHtml(a.type||a.kind)} · v${a.version||1} · ${a.bytes||0} حرفاً</small></div><button class="secondary tiny-btn" data-artifact="${a.id}" type="button">عرض</button></li>`).join(''):'<p class="agent-empty">لا ملفات متاحة.</p>';
+   injectIcons();
+  }
+ }else if(currentArtifactTab==='changes'){
+  const changesView=$('artifact-changes-view');
+  if(changesView){
+   if(artifactVersions.length>1){
+    changesView.innerHTML=`<div class="version-history">`+artifactVersions.map(v=>`
+     <div class="version-row">
+      <span class="version-badge">v${v.version}</span>
+      <span class="version-author">${escapeHtml(v.created_by||'agent')}</span>
+      <span class="version-date">${new Date(v.created_at*1000).toLocaleString('ar-EG')}</span>
+      <span class="version-size">${v.bytes||(v.content?v.content.length:0)} بايت</span>
+     </div>
+    `).join('')+`</div>`;
+   }else{
+    changesView.innerHTML=art?`<p class="agent-note">الإصدار الأولي (v${art.version||1}) تم إنشاؤه بواسطة ${escapeHtml(art.created_by||'agent')}.</p>`:'<p class="agent-empty">لا تغييرات مسجلة.</p>';
+   }
+  }
+ }
+}
+
 async function previewArtifact(id){
  try{
   const data=await api('/api/agent/artifacts/'+id);
   agent.artifact=data.artifact;
   paintPreview();
+  await loadArtifactVersions(id);
   renderAgentArtifacts(agent.task||{artifacts:[data.artifact]});
  }catch(error){toast(error.message);}
 }
@@ -583,10 +673,11 @@ function paintPreview(){
  // Scripts stay off unless the visitor explicitly turns them on.
  frame.setAttribute('sandbox',runnable?'allow-scripts':'');
  const shell='<style>body{margin:16px;font:15px/1.7 system-ui,"Noto Sans Arabic",sans-serif;color:#1c2b22;background:#fff;direction:rtl}pre{white-space:pre-wrap;word-break:break-word}code{font-family:ui-monospace,monospace}</style>';
- const body=artifact.kind==='html'?artifact.content:'<pre>'+escapeHtml(artifact.content)+'</pre>';
+ const body=artifact.kind==='html'?artifact.content:'<pre class="ltr" dir="ltr">'+escapeHtml(artifact.content)+'</pre>';
  frame.srcdoc=shell+body;
  $('artifact-run-row').classList.toggle('hidden',artifact.kind!=='html');
  $('artifact-name').textContent=artifact.name;
+ renderArtifactTabContent();
 }
 async function downloadArtifact(){
  const artifact=agent.artifact;
@@ -636,8 +727,51 @@ async function startAgentTask(event){
 }
 $('agent-approvals').addEventListener('click',e=>{
  const button=e.target.closest('[data-approve]');
- if(button)decideApproval(button.dataset.approve,button.dataset.value==='1');
+ if(button){
+  const callId=button.dataset.approve;
+  const decision=button.dataset.decision||(button.dataset.value==='1'?'allow_once':'deny');
+  decideApproval(callId,decision);
+ }
 });
+if($('artifact-tabs'))$('artifact-tabs').addEventListener('click',e=>{
+ const btn=e.target.closest('.tab-btn');
+ if(btn)switchArtifactTab(btn.dataset.tab);
+});
+if($('artifact-version-select'))$('artifact-version-select').addEventListener('change',async e=>{
+ const ver=parseInt(e.target.value,10);
+ const match=artifactVersions.find(v=>v.version===ver);
+ if(match&&agent.artifact){
+  agent.artifact={...agent.artifact,version:match.version,content:match.content,created_by:match.created_by};
+  paintPreview();
+  renderArtifactTabContent();
+ }
+});
+document.querySelectorAll('.mode-btn').forEach(btn=>btn.addEventListener('click',e=>{
+ const mode=btn.dataset.mode;
+ document.querySelectorAll('.mode-btn').forEach(b=>b.classList.toggle('active',b===btn));
+ if(mode==='chat')switchView('chats');
+ else if(mode==='agent')switchView('workspace');
+}));
+document.querySelectorAll('.sheet-tab').forEach(tab=>tab.addEventListener('click',e=>{
+ const target=tab.dataset.sheet;
+ document.querySelectorAll('.sheet-tab').forEach(t=>t.classList.toggle('active',t===tab));
+ const main=$('agent-main-panel'),side=$('agent-side-panel');
+ if(main&&side){
+  if(target==='tasks'||target==='steps'){
+   main.classList.remove('sheet-hidden');side.classList.add('sheet-hidden');
+   if(target==='steps'){
+    const stepsEl=$('agent-steps');
+    if(stepsEl)stepsEl.scrollIntoView({behavior:'smooth'});
+   }
+  }else if(target==='files'){
+   main.classList.add('sheet-hidden');side.classList.remove('sheet-hidden');
+   switchArtifactTab('files');
+  }else if(target==='artifact'){
+   main.classList.add('sheet-hidden');side.classList.remove('sheet-hidden');
+   switchArtifactTab('preview');
+  }
+ }
+}));
 $('agent-artifacts').addEventListener('click',e=>{
  const button=e.target.closest('[data-artifact]');
  if(button)previewArtifact(button.dataset.artifact);
