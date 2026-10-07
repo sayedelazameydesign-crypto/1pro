@@ -1,0 +1,113 @@
+name: Sync production keys to Vercel
+
+# The operator keeps the deployment keys in GitHub, but production runs on Vercel,
+# and Vercel cannot read GitHub secrets. This workflow is the bridge: a runner is
+# the only place GitHub exposes secret *values*, so it reads them there, validates
+# every one of them, writes them into the Vercel project as Production variables,
+# redeploys, and verifies the live service. It never prints a value: the script it
+# calls redacts every line it emits (see scripts/vercel_env_sync.sh).
+#
+# Nothing of the repository is modified. Run it by hand (Actions -> this workflow
+# -> Run workflow), or keep the temporary push trigger below until it lands on main.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate the secrets only; change nothing on Vercel"
+        type: boolean
+        default: false
+  # TEMPORARY: lets this branch prove the flow before the file reaches main.
+  # Remove this block (and the branch guard is then moot) when merging to main.
+  push:
+    branches:
+      - arena/79021108-1pro
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-vercel-env
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Declaring the environment means the job also sees secrets and variables that
+    # were attached to the "Production" environment instead of the repository.
+    environment: Production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install psycopg so the database URL is proven by a live query
+        run: python -m pip install --quiet "psycopg[binary]~=3.2"
+
+      - name: Read GitHub secrets, push them to Vercel, verify production
+        id: sync
+        env:
+          # Every alias is tried in order; the first non-empty one wins. `vars.*`
+          # is the fallback for a key that was stored as a repository/environment
+          # *variable* instead of a secret (secrets are the safer place).
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          DATABASE_PRIVATE_URL: ${{ secrets.DATABASE_PRIVATE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          WAHA_SECRET: ${{ secrets.WAHA_SECRET }}
+          WAHA_APP_SECRET: ${{ secrets.WAHA_APP_SECRET }}
+          WAHA_ALLOWED_ORIGINS: ${{ secrets.WAHA_ALLOWED_ORIGINS }}
+          ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_PROJECT_NAME: ${{ secrets.VERCEL_PROJECT_NAME || vars.VERCEL_PROJECT_NAME }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_TEAM_SLUG: ${{ secrets.VERCEL_TEAM_SLUG || vars.VERCEL_TEAM_SLUG }}
+          GITHUB_REPO_ID: ${{ github.event.repository.id }}
+        run: |
+          set -uo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            scripts/vercel_env_sync.sh --dry-run 2>&1 | tee /tmp/sync.log
+            status="${PIPESTATUS[0]}"
+          else
+            scripts/vercel_env_sync.sh 2>&1 | tee /tmp/sync.log
+            status="${PIPESTATUS[0]}"
+          fi
+          echo "script-exit=$status"
+          exit "$status"
+        continue-on-error: true
+
+      - name: Publish the report (step summary + annotations)
+        if: always()
+        run: |
+          set -uo pipefail
+          log=/tmp/sync.log
+          [ -f "$log" ] || { echo "no log produced"; exit 0; }
+
+          {
+            echo "### Sync production keys to Vercel"
+            echo
+            echo '```text'
+            head -c 6000 "$log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          n=0
+          while IFS= read -r line; do
+            case "$line" in
+              PASS*|FAIL*|WARN*|"Stopping:"*|"All checks"*|"script-exit"*|"Add an Actions"*|"Dry run"*)
+                n=$((n + 1))
+                [ "$n" -le 10 ] || continue
+                printf '::warning title=sync%02d::%s\n' "$n" "$line" ;;
+            esac
+          done < "$log"
+
+      - name: Fail the run when the script failed
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "The sync script reported a failure; see the report above."
+          exit 1
