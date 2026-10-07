@@ -109,6 +109,26 @@ Vercel لا يقرأ أسرار GitHub، فالنقل يحتاج وسيطًا ي
 | أصل الصفحة | `WAHA_ALLOWED_ORIGINS` أو `ALLOWED_ORIGINS` | وإن غابا يُستخدم أصل Pages افتراضيًا |
 | رمز Vercel | `VERCEL_TOKEN` أو `VERCEL_API_TOKEN` | **إلزامي للكتابة على Vercel**؛ بدونه يتوقف السكربت بخطوة واضحة ولا يلمس Vercel |
 
+### مفتاح Neon بديلًا عن لصق الرابط: `NEON_API_KEY`
+
+لصق الرابط يدويًا عرضة لخطأ حقيقي وقع فعلًا في هذا المستودع: مفتاح Neon API
+(`napi_…`) وُضع في خانة `DATABASE_URL`. عند وجود `NEON_API_KEY` لم يعد ذلك خطأً قاتلًا:
+
+1. إن كان `DATABASE_URL` **غائبًا أو ليس رابط Postgres** (طوله يُذكر ولا تُطبع قيمته)،
+   يبني السكربت الرابط بنفسه من Neon API: المشروع ← النقطة الطرفية `read_write` ←
+   الفرع الأساسي ← الدور `neondb_owner` (أو أول دور غير محمي) ← `reveal_password` ←
+   مضيف `-pooler`، مع ترميز كلمة المرور و`sslmode=require`.
+2. الرابط المُستخرَج يمرّ بنفس التحقق الحيّ `SELECT 1` قبل أي كتابة على Vercel، وكلمته
+   وDSN كاملًا ينضمان إلى مُنقِّح السجل مثل بقية الأسرار (`***`).
+3. مفتاح مقصور على مشروع واحد (`project-scoped`) يكفي: رسالة الـ404 من Neon تسمّي
+   المشروع المقصود. وإن رأى المفتاح **أكثر من مشروع** يتوقف السكربت ولا يخمّن — حدِّد
+   `NEON_PROJECT_ID` حينها.
+
+مفاتيح اختيارية: `NEON_PROJECT_ID` · `NEON_ROLE` (الافتراضي `neondb_owner`) ·
+`NEON_DATABASE` (الافتراضي `neondb`) · وللتعطيل: `scripts/vercel_env_sync.sh --no-neon-fetch`.
+لا يُكتب شيء إلى GitHub: القيمة تُشتق على المُشغِّل وتُرسل إلى Vercel مباشرة، فيبقى
+GitHub مصدر الحقيقة للأسرار الأخرى، والتحقق الحيّ هو الشرط قبل الكتابة.
+
 ### إضافة `VERCEL_TOKEN` (مرة واحدة)
 
 1. [vercel.com/account/tokens](https://vercel.com/account/tokens) → Create Token →

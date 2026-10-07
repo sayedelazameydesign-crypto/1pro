@@ -46,8 +46,9 @@ jobs:
           V_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
           V_WAHA_SECRET: ${{ vars.WAHA_SECRET }}
           V_VERCEL_TOKEN: ${{ vars.VERCEL_TOKEN }}
+          V_NEON_API_KEY: ${{ vars.NEON_API_KEY }}
         run: |
-          for name in DATABASE_URL GEMINI_API_KEY WAHA_SECRET VERCEL_TOKEN; do
+          for name in DATABASE_URL GEMINI_API_KEY WAHA_SECRET VERCEL_TOKEN NEON_API_KEY; do
             key="V_$name"
             if [ -n "${!key:-}" ]; then
               echo "::warning title=variable::$name is set as a repository or environment VARIABLE. This repository is public, so its variables are readable by anyone -- move $name to Actions secrets (and delete the variable)."
@@ -78,6 +79,13 @@ jobs:
           DB_URL: ${{ secrets.DB_URL }}
           NEON_DSN: ${{ secrets.NEON_DSN }}
           CONNECTION_STRING: ${{ secrets.CONNECTION_STRING }}
+          # A Neon API key is not a connection string, but it can produce one: the
+          # script derives the pooled URL from it when DATABASE_URL is absent or is not
+          # a Postgres URL, then proves it with the same live query. See DEPLOY-VERCEL.md.
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY || vars.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID || vars.NEON_PROJECT_ID }}
+          NEON_ROLE: ${{ vars.NEON_ROLE }}
+          NEON_DATABASE: ${{ vars.NEON_DATABASE }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || vars.GEMINI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}

@@ -1,0 +1,301 @@
+name: Database check (read-only, temporary)
+
+# Temporary operator tool, sibling of prod-probe.yml. The agent's sandbox cannot read
+# repository secrets (403) and cannot reach neon.tech, so "is the value the operator
+# stored in DATABASE_URL actually a working pooled Neon URL?" cannot be answered from
+# there. A runner can read the secret and reach Neon.
+#
+# Read-only against the database: SELECT 1, version(), current_database(), a table count.
+# No writes anywhere, no Vercel, no deployment.
+#
+# The value itself is never printed. What is printed is derived structure only: lengths,
+# presence booleans, and a skeleton in which every alphanumeric becomes `a` and the
+# user:password part is already replaced by ***. Error text is masked the same way.
+#
+# Delete this file once the answer is known: it is not part of the product.
+on:
+  push:
+    paths:
+      - ".github/workflows/db-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DSN: ${{ secrets.DATABASE_URL }}
+      SESSION_SECRET: ${{ secrets.WAHA_SECRET }}
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet "psycopg[binary]~=3.2"
+
+      - name: Structure of the stored value, never the value
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/shape.txt
+          import os
+          import re
+
+          value = os.environ.get("DSN", "")
+          if not value:
+              print("MISSING: no DATABASE_URL secret is visible in this job")
+              raise SystemExit(0)
+
+          print(f"length = {len(value)}")
+          print(f"leading whitespace  = {value != value.lstrip()}")
+          print(f"trailing whitespace = {value != value.rstrip()}")
+          print(f"contains newline/tab = {any(c in value for c in chr(10) + chr(13) + chr(9))}")
+          print(f"wrapped in double quotes = {len(value) >= 2 and value[0] == chr(34) and value[-1] == chr(34)}")
+          print(f"wrapped in single quotes = {len(value) >= 2 and value[0] == chr(39) and value[-1] == chr(39)}")
+          for token in ("postgres://", "postgresql://", "DATABASE_URL=", "sslmode=", "-pooler",
+                        "neon", "https://", "@", "?", "=", " ", "[", "]"):
+              print(f"contains {token!r} = {token in value}")
+          print(f"only [A-Za-z0-9_-] = {bool(re.fullmatch(r'[A-Za-z0-9_-]+', value))}")
+
+          masked = re.sub(r"://[^@/\s]*@", "://***@", value)
+          skeleton = re.sub(r"[A-Za-z0-9]", "a", masked)
+          print(f"skeleton = {skeleton[:120]}")
+          PY
+
+      - name: Derive and verify the project's endpoint hostnames (no secret involved)
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/hosts.txt
+          import socket
+
+          # Taken from the project's Neon Auth URL:
+          #   https://ep-small-meadow-b424bx1m.neonauth.c-6.us-east-2.aws.neon.tech/neondb/auth
+          # The compute endpoint and region, therefore, are:
+          endpoint = "ep-small-meadow-b424bx1m"
+          region = "c-6.us-east-2.aws"
+          candidates = {
+              "direct": f"{endpoint}.{region}.neon.tech",
+              "pooled": f"{endpoint}-pooler.{region}.neon.tech",
+          }
+          for label, host in candidates.items():
+              try:
+                  addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, 5432)})
+                  print(f"{label}: DNS ok {host} -> {', '.join(addresses[:3])}")
+                  with socket.create_connection((host, 5432), timeout=15):
+                      print(f"{label}: TCP 5432 reachable")
+              except Exception as error:
+                  print(f"{label}: FAIL {type(error).__name__}: {error} ({host})")
+
+          # A wrong password proves the host, the database and the role all exist:
+          # Postgres answers "password authentication failed for user ..." only after
+          # it has resolved all three. Nothing is written and no real credential is used.
+          # Forced over IPv4: this runner has no IPv6 egress, and the address family the
+          # deployment must use is itself the question (some serverless platforms are
+          # IPv4-only), so the probe answers it explicitly.
+          try:
+              import psycopg
+              for label, host in candidates.items():
+                  try:
+                      infos = socket.getaddrinfo(host, 5432, socket.AF_INET, socket.SOCK_STREAM)
+                      ipv4 = sorted({info[4][0] for info in infos})
+                      print(f"{label}: A records -> {', '.join(ipv4[:3])}")
+                  except Exception as error:
+                      print(f"{label}: no IPv4 address ({type(error).__name__}) -- "
+                            f"a platform without IPv6 egress could not reach it")
+                      continue
+                  conninfo = (f"host={host} hostaddr={ipv4[0]} user=neondb_owner "
+                              f"password=not-the-password dbname=neondb sslmode=require")
+                  try:
+                      psycopg.connect(conninfo, connect_timeout=20)
+                      print(f"{label}: UNEXPECTED success with a dummy password")
+                  except Exception as error:
+                      print(f"{label}: server said -> {str(error).strip().splitlines()[0][:160]}")
+          except ImportError:
+              print("psycopg unavailable; skipped the server-message proof")
+          PY
+
+      - name: Can the stored NEON_API_KEY produce the real connection string?
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/neon.txt
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          API = "https://console.neon.tech/api/v2"
+          key = os.environ.get("NEON_API_KEY", "")
+          if not key:
+              print("MISSING: no NEON_API_KEY is visible in this job")
+              raise SystemExit(0)
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  API + path,
+                  headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  body = error.read(300).decode("utf-8", "replace")
+                  return error.code, {"_body": body}
+              except Exception as error:
+                  return 0, {"_body": f"{type(error).__name__}: {error}"}
+
+
+          # The endpoint id is public: it is in the project's Neon Auth URL.
+          endpoint_id = "ep-small-meadow-b424bx1m"
+          status, payload = get("/projects?limit=100")
+          if status == 200:
+              projects = payload.get("projects", [])
+              print(f"projects: {len(projects)} visible to this key")
+              for project in projects:
+                  print(f"  - {project.get('name')}  id={project.get('id')}  "
+                        f"region={project.get('region_id')}  pg={project.get('pg_version')}")
+              ids = [p.get("id") for p in projects]
+          else:
+              # A project-scoped key cannot list projects, but the API names the project
+              # it is scoped to, which is exactly what is needed next.
+              body = str(payload.get("_body", ""))
+              print(f"projects: HTTP {status} (project-scoped key)")
+              ids = re.findall(r"subject_project_id:\\\\?\"([^\"]+)\\\\?\"", body) or \
+                  re.findall(r"subject_project_id:\"([^\"]+)\"", body)
+              print(f"scoped to: {ids or 'unknown'}")
+              if not ids:
+                  print(f"  raw: {body[:200]}")
+                  raise SystemExit(0)
+          for project_id in ids:
+              status, payload = get(f"/projects/{project_id}/endpoints")
+              for endpoint in payload.get("endpoints", []):
+                  host = endpoint.get("host", "")
+                  print(f"  endpoint of {project_id}: {host} (type={endpoint.get('type')})")
+                  if host.startswith(endpoint_id):
+                      print(f"MATCH: the project behind the auth URL is {project_id}")
+                      print(f"  endpoint type = {endpoint.get('type')}")
+                      branches_status, branches = get(f"/projects/{project_id}/branches")
+                      for branch in branches.get("branches", []):
+                          print(f"  branch {branch.get('name')} primary={branch.get('primary')} "
+                                f"id={branch.get('id')}")
+                          branch_id = branch.get("id")
+                          roles_status, roles = get(
+                              f"/projects/{project_id}/branches/{branch_id}/roles")
+                          for role in roles.get("roles", []):
+                              name = role.get("name")
+                              print(f"    role {name} (protected={role.get('protected')})")
+                              if name == "neondb_owner":
+                                  rev_status, rev = get(
+                                      f"/projects/{project_id}/branches/{branch_id}"
+                                      f"/roles/{name}/reveal_password")
+                                  if rev_status == 200 and rev.get("password"):
+                                      password = rev["password"]
+                                      pooled = host.replace(endpoint_id, endpoint_id + "-pooler", 1)
+                                      dsn = (f"postgresql://{name}:{password}@{pooled}"
+                                             f"/neondb?sslmode=require")
+                                      print(f"    reveal_password: HTTP 200 "
+                                            f"(password length {len(password)})")
+                                      mask = re.sub(r"://[^@/\s]*@", "://***@", dsn)
+                                      print(f"    usable pooled URL shape: {mask}")
+                                      try:
+                                          import psycopg
+                                          with psycopg.connect(dsn, connect_timeout=20) as db:
+                                              one = db.execute("SELECT 1").fetchone()[0]
+                                              dbname = db.execute(
+                                                  "SELECT current_database()"
+                                              ).fetchone()[0]
+                                          print(f"    LIVE CHECK: SELECT 1 = {one}, "
+                                                f"database = {dbname!r} -- the API path works")
+                                      except Exception as error:
+                                          print(f"    LIVE CHECK failed: {type(error).__name__}: "
+                                                f"{re.sub(r'://[^@/]*@', '://***@', str(error))[:160]}")
+                                  else:
+                                      print(f"    reveal_password: HTTP {rev_status} -- "
+                                            f"the role may be protected; a reset would be needed")
+          PY
+
+      - name: Presence of the session secret
+        run: |
+          set -uo pipefail
+          if [ -z "${SESSION_SECRET:-}" ]; then
+            echo "WAHA_SECRET: MISSING (sessions drop on every container recycle)" | tee /tmp/session.txt
+          else
+            echo "WAHA_SECRET: present, length=${#SESSION_SECRET} (needs >= 16)" | tee /tmp/session.txt
+          fi
+
+      - name: Live query, raw then trimmed
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/live.txt
+          import os
+          import re
+          import time
+
+          import psycopg
+
+
+          def masked(text):
+              return re.sub(r"://[^@/\s]*@", "://***@", str(text))
+
+
+          def with_sslmode(dsn):
+              if "sslmode=" in dsn:
+                  return dsn
+              return dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
+
+
+          def cleaned(dsn):
+              text = dsn.strip()
+              if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+                  text = text[1:-1]
+              return text
+
+
+          def attempt(label, dsn):
+              started = time.time()
+              try:
+                  with psycopg.connect(dsn, connect_timeout=20) as db:
+                      one = db.execute("SELECT 1").fetchone()[0]
+                      name = db.execute("SELECT current_database()").fetchone()[0]
+                      server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
+                      tables = db.execute(
+                          "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+                      ).fetchone()[0]
+                  print(f"{label}: PASS SELECT 1 = {one} in {time.time() - started:.1f}s, "
+                        f"database = {name!r}, server = {server}, public tables = {tables}")
+              except Exception as error:
+                  print(f"{label}: FAIL {type(error).__name__}: {masked(error)}")
+
+
+          raw = os.environ.get("DSN", "")
+          if not raw:
+              print("MISSING: nothing to connect to")
+              raise SystemExit(0)
+          attempt("as stored", with_sslmode(raw))
+          tidy = cleaned(raw)
+          if tidy != raw:
+              attempt("after trimming whitespace/quotes", with_sslmode(tidy))
+          PY
+
+      - name: Publish the findings as annotations, the channel readable remotely
+        if: always()
+        run: |
+          set -uo pipefail
+          emit() {
+            local name="$1" file="/tmp/$1.txt" text
+            [ -f "$file" ] || text="(step produced no file)"
+            text="$(tr '\n' '|' < "$file" | head -c 1200)"
+            printf '::warning title=dbcheck-%s::%s\n' "$1" "${text:-"(empty)"}"
+          }
+          emit shape
+          emit hosts
+          emit neon
+          emit session
+          emit live

@@ -21,12 +21,24 @@
 #   VERCEL_TOKEN | VERCEL_API_TOKEN
 #   VERCEL_PROJECT_ID | VERCEL_PROJECT_NAME   (default: cela)
 #   VERCEL_TEAM_ID | VERCEL_TEAM_SLUG         (default: celia-fashions-projects)
+#   NEON_API_KEY                              (can stand in for a missing DATABASE_URL:
+#                                              the Neon API yields the pooled URL, and the
+#                                              derivation is proven by the same live query)
+#   NEON_PROJECT_ID | NEON_ROLE | NEON_DATABASE (optional knobs for that derivation;
+#                                               defaults: the only project, neondb_owner,
+#                                               neondb)
 #   GITHUB_REPO_ID                            (only needed to trigger the redeploy)
 #   WAHA_SERVICE_URL                          (default: https://cela-umber.vercel.app)
 set -uo pipefail
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+NEON_FETCH=1
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --no-neon-fetch) NEON_FETCH=0 ;;
+  esac
+done
 
 SERVICE_URL="${WAHA_SERVICE_URL:-https://cela-umber.vercel.app}"
 PAGES_ORIGIN="https://sayedelazameydesign-crypto.github.io"
@@ -139,13 +151,148 @@ shape_of_dsn() { local dsn="$1" scheme pooled
   printf '%s scheme, %s endpoint' "$scheme" "$pooled"
 }
 
+# --- Neon API: turn a key into the connection string --------------------------------
+# A Neon API key already reaches the database: it names the project, the read/write
+# endpoint, the primary branch and the role, and it can reveal that role's password. So
+# "DATABASE_URL must be a Postgres URL" stops being a copy-paste ritual that can go
+# wrong (an API key pasted there is a real failure this repository has seen) and becomes
+# something the run derives and then proves with a live query. The derivation is
+# read-only; nothing is ever written back to GitHub, and the derived password and DSN
+# join REDACT_NAMES exactly like the secrets do.
+# A project-scoped key works: when it cannot list projects, the 404 names the project it
+# is bound to, which is the one we want anyway.
+NEON_API="https://console.neon.tech/api/v2"
+NCODE="000"
+NRESP=""
+neon_call() { # PATH
+  local path="$1" tmp
+  tmp="$(mktemp)"
+  NCODE="$(http_code "$(curl -sS -X GET -H "Authorization: Bearer ${NEON_API_KEY:-}" \
+      -H 'Accept: application/json' -o "$tmp" -w '%{http_code}' "$NEON_API$path" || true)")"
+  NRESP="$(cat "$tmp")"
+  rm -f "$tmp"
+}
+
+pooled_host() { # host -> host with the "-pooler" label Neon gives its pooler endpoint
+  local host="$1" first rest
+  first="${host%%.*}"
+  rest="${host#*.}"
+  case "$first" in
+    *-pooler) printf '%s' "$host" ;;
+    ep-*)     printf '%s-pooler.%s' "$first" "$rest" ;;
+    *)        printf '%s' "$host" ;;
+  esac
+}
+
+NEON_NOTE=""
+derive_database_url() {
+  # Fills DATABASE_URL and NEON_NOTE from the Neon API. Failures return 1 quietly: the
+  # caller reports them as MISSING with the HTTP status, because a derivation that did
+  # not work must not look like a value that did.
+  have "${NEON_API_KEY:-}" || return 1
+  local project_id="${NEON_PROJECT_ID:-}" branch_id="" host="" role="${NEON_ROLE:-neondb_owner}"
+  local dbname="${NEON_DATABASE:-neondb}" password="" encoded="" chosen=""
+
+  if ! have "$project_id"; then
+    neon_call "/projects?limit=100"
+    if [ "$NCODE" = "200" ]; then
+      # Exactly one project is unambiguous; several are not, and guessing one would put
+      # the wrong database in production. NEON_PROJECT_ID is the way to decide.
+      project_id="$(printf '%s' "$NRESP" | python3 -c '
+import json, sys
+projects = json.load(sys.stdin).get("projects") or []
+print(projects[0]["id"] if len(projects) == 1 else "")' 2>/dev/null)"
+      have "$project_id" || return 1
+    else
+      project_id="$(printf '%s' "$NRESP" | python3 -c '
+import json, re, sys
+try:
+    message = json.load(sys.stdin).get("message", "")
+except Exception:
+    message = sys.stdin.read()
+match = re.search(r"subject_project_id:\s*\\?\"([^\"]+)", message)
+print(match.group(1) if match else "")' 2>/dev/null)"
+      have "$project_id" || return 1
+    fi
+  fi
+
+  neon_call "/projects/$project_id/endpoints"
+  [ "$NCODE" = "200" ] || return 1
+  host="$(printf '%s' "$NRESP" | python3 -c '
+import json, sys
+endpoints = json.load(sys.stdin).get("endpoints") or []
+preferred = [e for e in endpoints if e.get("type") == "read_write"] or endpoints
+print(preferred[0].get("host", "") if preferred else "")' 2>/dev/null)"
+  have "$host" || return 1
+
+  neon_call "/projects/$project_id/branches"
+  [ "$NCODE" = "200" ] || return 1
+  branch_id="$(printf '%s' "$NRESP" | python3 -c '
+import json, sys
+branches = json.load(sys.stdin).get("branches") or []
+primary = [b for b in branches if b.get("primary")] or branches
+print(primary[0].get("id", "") if primary else "")' 2>/dev/null)"
+  have "$branch_id" || return 1
+
+  neon_call "/projects/$project_id/branches/$branch_id/roles"
+  [ "$NCODE" = "200" ] || return 1
+  chosen="$(printf '%s' "$NRESP" | WANTED="$role" python3 -c '
+import json, os, sys
+wanted = os.environ.get("WANTED", "neondb_owner")
+roles = json.load(sys.stdin).get("roles") or []
+names = [r.get("name", "") for r in roles if not r.get("protected")]
+print(wanted if wanted in names else (names[0] if names else ""))' 2>/dev/null)"
+  have "$chosen" || return 1
+  role="$chosen"
+
+  neon_call "/projects/$project_id/branches/$branch_id/roles/$role/reveal_password"
+  [ "$NCODE" = "200" ] || return 1
+  password="$(printf '%s' "$NRESP" | python3 -c '
+import json, sys
+print(json.load(sys.stdin).get("password", ""))' 2>/dev/null)"
+  have "$password" || return 1
+
+  export NEON_DERIVED_PASSWORD="$password"
+  export NEON_DERIVED_DSN=""
+  REDACT_NAMES+=(NEON_DERIVED_PASSWORD NEON_DERIVED_DSN)
+  encoded="$(NEON_DERIVED_PASSWORD="$password" python3 -c '
+import os, urllib.parse
+print(urllib.parse.quote(os.environ["NEON_DERIVED_PASSWORD"], safe=""))')"
+  DATABASE_URL="postgresql://$role:$encoded@$(pooled_host "$host")/$dbname?sslmode=require"
+  export NEON_DERIVED_DSN="$DATABASE_URL"
+  NEON_NOTE="project $project_id, branch $branch_id, role $role, endpoint $(pooled_host "$host")"
+  return 0
+}
+
 echo "== 1/5 GitHub secrets (read from this runner's environment)"
 echo "key                  state"
 if resolve DATABASE_URL "${DATABASE_ALIASES[@]}"; then
-  echo "DATABASE_URL         present  <- secret \"$RESOLVED_FROM\"$(dupes_note "$RESOLVED_FROM") ($(shape_of_dsn "$DATABASE_URL"))"
+  case "$DATABASE_URL" in
+    postgres://*|postgresql://*)
+      echo "DATABASE_URL         present  <- secret \"$RESOLVED_FROM\"$(dupes_note "$RESOLVED_FROM") ($(shape_of_dsn "$DATABASE_URL"))" ;;
+    *)
+      # Seen in practice: a Neon API key pasted here. Say what is wrong with the value
+      # (length, missing scheme) without ever printing it.
+      echo "DATABASE_URL         present  <- secret \"$RESOLVED_FROM\" but NOT a Postgres URL (no postgresql:// scheme, ${#DATABASE_URL} characters)" ;;
+  esac
 else
   echo "DATABASE_URL         MISSING  (tried: $(alias_list "${DATABASE_ALIASES[@]}"))"
 fi
+case "${DATABASE_URL:-}" in
+  postgres://*|postgresql://*) ;;
+  *)
+    if have "${NEON_API_KEY:-}" && [ "$NEON_FETCH" = "1" ]; then
+      if derive_database_url; then
+        echo "DATABASE_URL         derived  <- Neon API ($NEON_NOTE): $(shape_of_dsn "$DATABASE_URL")"
+        echo "DATABASE_URL         a live SELECT 1 below must still pass before anything is pushed"
+      else
+        echo "DATABASE_URL         the Neon API derivation produced nothing (HTTP ${NCODE:-000}); fix the secret by hand"
+      fi
+    elif have "${NEON_API_KEY:-}"; then
+      echo "DATABASE_URL         derivation skipped (--no-neon-fetch)"
+    fi
+    ;;
+esac
 if resolve GEMINI_API_KEY "${GEMINI_ALIASES[@]}"; then
   echo "GEMINI_API_KEY       present  <- secret \"$RESOLVED_FROM\"$(dupes_note "$RESOLVED_FROM")"
 else

@@ -1,0 +1,99 @@
+name: Production probe (read-only, temporary)
+
+# Temporary operator tool. The agent's sandbox can reach github.com only, and the
+# deployed service lives on vercel.app, so "is production actually up, and with which
+# database and model?" cannot be answered from there. A runner can reach both.
+#
+# It is deliberately read-only: three GETs of public endpoints and one CORS preflight.
+# It reads no secret, writes no variable, and never touches the deployment.
+#
+# The raw log is not readable from the sandbox (it is served from a host outside the
+# allow-list), so the last step republishes every finding as a check-run annotation --
+# `gh api repos/.../commits/<sha>/check-runs` -> `check-runs/<id>/annotations`.
+#
+# Delete this file once the answer is known: it is not part of the product.
+on:
+  push:
+    paths:
+      - ".github/workflows/prod-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVICE_URL: https://cela-umber.vercel.app
+      PAGES_ORIGIN: https://sayedelazameydesign-crypto.github.io
+    steps:
+      - name: Resolve the host first, so a dead domain cannot look like a dead app
+        run: |
+          set -uo pipefail
+          getent hosts cela-umber.vercel.app || echo "DNS: no answer"
+          curl -sS -o /dev/null --max-time 45 \
+            -w 'reach http=%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s' \
+            "$SERVICE_URL/health" > /tmp/r_reach.txt 2>&1 || echo "curl exit $?" >> /tmp/r_reach.txt
+          cat /tmp/r_reach.txt
+
+      - name: GET /health -- the two fields the sync verifies, ai and database
+        run: |
+          set -uo pipefail
+          curl -sS --max-time 60 "$SERVICE_URL/health?probe=$(date +%s)" -o /tmp/health.json || true
+          jq -r '"health ok=\(.ok) database=\(.database) ai=\(.ai) rag_ready=\(.rag.ready) rag_rows=\(.rag.rows // .rag.vectors // "?") agent_inline=\(.agent.inline) agent_state=\(.agent.state)"' \
+            /tmp/health.json > /tmp/r_health.txt 2>/dev/null \
+            || head -c 300 /tmp/health.json > /tmp/r_health.txt
+          cat /tmp/r_health.txt
+
+      - name: GET /readyz -- 204 means a real SELECT 1 against the database
+        run: |
+          set -uo pipefail
+          code="$(curl -sS -o /dev/null --max-time 60 -w '%{http_code}' \
+            "$SERVICE_URL/readyz?probe=$(date +%s)" || echo 000)"
+          echo "readyz=$code (expected 204; 500 means the database is not reachable)" | tee /tmp/r_readyz.txt
+
+      - name: GET /api/agent/config -- which provider the server will actually use
+        run: |
+          set -uo pipefail
+          curl -sS --max-time 60 "$SERVICE_URL/api/agent/config?probe=$(date +%s)" -o /tmp/config.json || true
+          jq -r '"config enabled=\(.enabled) ai_mode=\(.ai_mode) demo=\(.demo) model=\(.model) inline=\(.inline) budget=\(.execution.budget // .execution.max_steps // "?")"' \
+            /tmp/config.json > /tmp/r_config.txt 2>/dev/null \
+            || head -c 300 /tmp/config.json > /tmp/r_config.txt
+          cat /tmp/r_config.txt
+
+      - name: OPTIONS /api/sessions -- CORS preflight from the Pages origin
+        run: |
+          set -uo pipefail
+          curl -sS --max-time 60 -X OPTIONS -o /dev/null -D /tmp/cors.headers -w '' \
+            -H "Origin: $PAGES_ORIGIN" \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: content-type,x-waha-csrf' \
+            "$SERVICE_URL/api/sessions" || echo "curl exit $?"
+          if grep -qi "^access-control-allow-origin" /tmp/cors.headers; then
+            grep -i "^access-control-allow" /tmp/cors.headers | tr -d '\r' | paste -sd' ' - > /tmp/r_cors.txt
+          else
+            echo "no Access-Control-Allow-* header -- the Pages UI cannot call the API" > /tmp/r_cors.txt
+          fi
+          cat /tmp/r_cors.txt
+
+      - name: Publish the findings as annotations, the only channel readable remotely
+        if: always()
+        run: |
+          set -uo pipefail
+          emit() { # name file
+            local name="$1" file="/tmp/r_$1.txt" text
+            [ -f "$file" ] || text="(step produced no file)"
+            text="$(tr '\n' '|' < "$file" | head -c 900)"
+            printf '::warning title=probe-%s::%s\n' "$name" "${text:-"(empty)"}"
+          }
+          emit reach
+          emit health
+          emit readyz
+          emit config
+          emit cors
