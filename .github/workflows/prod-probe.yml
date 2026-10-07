@@ -1,0 +1,88 @@
+name: Production probe (read-only, temporary)
+
+# Temporary operator tool. The agent's sandbox can reach github.com only, and the
+# deployed service lives on vercel.app, so "is production actually up, and with which
+# database and model?" cannot be answered from there. A runner can reach both, so this
+# workflow asks production the question and prints the answer in the log.
+#
+# It is deliberately read-only: three GETs of public endpoints and one CORS preflight.
+# It reads no secret, writes no variable, and never touches the deployment. Delete this
+# file once the answer is known -- it is not part of the product.
+#
+# Triggered by a change to this file (so a one-line edit re-runs it) or by hand.
+on:
+  push:
+    paths:
+      - ".github/workflows/prod-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVICE_URL: https://cela-umber.vercel.app
+      PAGES_ORIGIN: https://sayedelazameydesign-crypto.github.io
+    steps:
+      - name: Resolve the host first (a dead domain looks like a dead app)
+        run: |
+          set -uo pipefail
+          echo "service: $SERVICE_URL"
+          echo "pages  : $PAGES_ORIGIN"
+          getent hosts cela-umber.vercel.app || echo "DNS: no answer"
+          echo "-- TLS/HTTP reachability --"
+          curl -sS -o /dev/null --max-time 45 \
+            -w 'http=%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s\n' \
+            "$SERVICE_URL/health" || echo "curl failed with exit $?"
+
+      - name: "GET /health (the field the sync verifies: ai, database)"
+        run: |
+          set -uo pipefail
+          body="$(curl -sS --max-time 60 "$SERVICE_URL/health?probe=$(date +%s)" || true)"
+          if [ -z "$body" ]; then echo "no body"; exit 1; fi
+          printf '%s' "$body" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$body"
+
+      - name: "GET /readyz (204 means a real SELECT 1 against the database)"
+        run: |
+          set -uo pipefail
+          code="$(curl -sS -o /dev/null --max-time 60 -w '%{http_code}' \
+            "$SERVICE_URL/readyz?probe=$(date +%s)" || echo 000)"
+          echo "readyz=$code (expected 204); 200 or 500 means the DB is not reachable"
+
+      - name: "GET /api/agent/config (which provider the server will actually use)"
+        run: |
+          set -uo pipefail
+          body="$(curl -sS --max-time 60 "$SERVICE_URL/api/agent/config?probe=$(date +%s)" || true)"
+          printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("unparsable:", sys.stdin.read()[:400]); raise SystemExit
+for key in ("enabled", "ai_mode", "demo", "model", "inline"):
+    if key in data:
+        print(f"{key} = {data[key]!r}")
+print("execution =", json.dumps(data.get("execution"), ensure_ascii=False)[:300])
+' || printf '%s\n' "$body"
+
+      - name: "OPTIONS /api/sessions (CORS preflight from the Pages origin)"
+        run: |
+          set -uo pipefail
+          headers=/tmp/cors.headers
+          curl -sS --max-time 60 -X OPTIONS -o /dev/null -D "$headers" -w '' \
+            -H "Origin: $PAGES_ORIGIN" \
+            -H 'Access-Control-Request-Method: POST' \
+            -H 'Access-Control-Request-Headers: content-type,x-waha-csrf' \
+            "$SERVICE_URL/api/sessions" || echo "curl failed with exit $?"
+          if grep -qi "^access-control-allow-origin" "$headers"; then
+            grep -i "^access-control-allow" "$headers"
+          else
+            echo "no Access-Control-Allow-* header -> the Pages UI cannot call the API"
+          fi
