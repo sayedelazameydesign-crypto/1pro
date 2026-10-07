@@ -368,6 +368,12 @@ Vercel؛ المشروع التجاري يتطلب Pro.
   «All Deployments» حتى تبقى روابط المعاينة محمية دون كسر Production.
 - **اتصالات Neon**: نمط Serverless يفتح اتصالاً جديداً مع كل استدعاء بارد؛
   راقب Neon Console تحسباً لاستنفاد الاتصالات واستخدم رابط **pooled**.
+- **نقل المفاتيح إلى Vercel**: Vercel لا يقرأ أسرار GitHub، فالوسيط هو workflow
+  **Sync production keys to Vercel** مع `scripts/vercel_env_sync.sh`: يقرأ الأسرار
+  على المُشغِّل (المكان الوحيد الذي تُكشف فيه قيمها)، ويتحقق من كل قيمة باختبار
+  حقيقي، ويكتبها على مشروع Vercel، ثم يعيد النشر ويفحص الحيّ. لا تُطبع أي قيمة
+  أبدًا. يحتاج `VERCEL_TOKEN` إلى جانب `DATABASE_URL` و`GEMINI_API_KEY`
+  و`WAHA_SECRET`؛ التفاصيل في `DEPLOY-VERCEL.md` → «4) المفاتيح».
 
 ## خادم PromptQL
 
