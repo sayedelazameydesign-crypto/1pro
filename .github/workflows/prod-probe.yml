@@ -31,48 +31,51 @@ jobs:
       SERVICE_URL: https://cela-umber.vercel.app
       PAGES_ORIGIN: https://sayedelazameydesign-crypto.github.io
     steps:
-      - name: Resolve the host first (a dead domain looks like a dead app)
+      - name: Resolve the host first, so a dead domain cannot look like a dead app
         run: |
           set -uo pipefail
           echo "service: $SERVICE_URL"
           echo "pages  : $PAGES_ORIGIN"
           getent hosts cela-umber.vercel.app || echo "DNS: no answer"
-          echo "-- TLS/HTTP reachability --"
+          echo "-- reachability --"
           curl -sS -o /dev/null --max-time 45 \
             -w 'http=%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s total=%{time_total}s\n' \
             "$SERVICE_URL/health" || echo "curl failed with exit $?"
 
-      - name: "GET /health (the field the sync verifies: ai, database)"
+      - name: GET /health -- the two fields the sync verifies, ai and database
         run: |
           set -uo pipefail
           body="$(curl -sS --max-time 60 "$SERVICE_URL/health?probe=$(date +%s)" || true)"
           if [ -z "$body" ]; then echo "no body"; exit 1; fi
           printf '%s' "$body" | python3 -m json.tool 2>/dev/null || printf '%s\n' "$body"
 
-      - name: "GET /readyz (204 means a real SELECT 1 against the database)"
+      - name: GET /readyz -- 204 means a real SELECT 1 against the database
         run: |
           set -uo pipefail
           code="$(curl -sS -o /dev/null --max-time 60 -w '%{http_code}' \
             "$SERVICE_URL/readyz?probe=$(date +%s)" || echo 000)"
-          echo "readyz=$code (expected 204); 200 or 500 means the DB is not reachable"
+          echo "readyz=$code (expected 204; 500 means the database is not reachable)"
 
-      - name: "GET /api/agent/config (which provider the server will actually use)"
+      - name: GET /api/agent/config -- which provider the server will actually use
         run: |
           set -uo pipefail
-          body="$(curl -sS --max-time 60 "$SERVICE_URL/api/agent/config?probe=$(date +%s)" || true)"
-          printf '%s' "$body" | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("unparsable:", sys.stdin.read()[:400]); raise SystemExit
-for key in ("enabled", "ai_mode", "demo", "model", "inline"):
-    if key in data:
-        print(f"{key} = {data[key]!r}")
-print("execution =", json.dumps(data.get("execution"), ensure_ascii=False)[:300])
-' || printf '%s\n' "$body"
+          curl -sS --max-time 60 "$SERVICE_URL/api/agent/config?probe=$(date +%s)" \
+            -o /tmp/agent-config.json || true
+          python3 - <<'PY'
+          import json
+          try:
+              data = json.load(open("/tmp/agent-config.json", encoding="utf-8"))
+          except Exception as error:
+              print("unparsable:", error)
+              print(open("/tmp/agent-config.json", encoding="utf-8").read()[:400])
+              raise SystemExit(0)
+          for key in ("enabled", "ai_mode", "demo", "model", "inline"):
+              if key in data:
+                  print(f"{key} = {data[key]!r}")
+          print("execution =", json.dumps(data.get("execution"), ensure_ascii=False)[:300])
+          PY
 
-      - name: "OPTIONS /api/sessions (CORS preflight from the Pages origin)"
+      - name: OPTIONS /api/sessions -- CORS preflight from the Pages origin
         run: |
           set -uo pipefail
           headers=/tmp/cors.headers
@@ -84,5 +87,5 @@ print("execution =", json.dumps(data.get("execution"), ensure_ascii=False)[:300]
           if grep -qi "^access-control-allow-origin" "$headers"; then
             grep -i "^access-control-allow" "$headers"
           else
-            echo "no Access-Control-Allow-* header -> the Pages UI cannot call the API"
+            echo "no Access-Control-Allow-* header -- the Pages UI cannot call the API"
           fi
