@@ -29,6 +29,31 @@ from .config import normalize_hostname
 ALLOWED_API_HOSTS = frozenset({"api.github.com", "api.vercel.com"})
 MAX_RESPONSE_BYTES = 512 * 1024
 
+# Failures that happen *before* an HTTP response exists. None of them is a verdict
+# on the credential: the token was never sent, or never answered. Callers that
+# would report "your token is bad" must consult this set first -- a connection cut
+# before any response produces exactly the same empty result as a wrong token, and
+# the two have opposite fixes. See ``scripts/integrations_live_check.py``, which
+# reports these as BLOCKED, not FAIL.
+NETWORK_FAILURE_CODES = frozenset({"upstream_unreachable", "upstream_timeout",
+                                   "dns_failed", "pre_http_network_failure"})
+
+# The connection ended before any HTTP response existed: the peer closed the TLS
+# handshake, reset it, refused it, or vanished mid-request. The socket cannot say
+# *why* -- a middlebox, a firewall and an upstream that simply went away are
+# identical from here -- so this code names the observable fact and not a cause.
+# That fact is the only one the credential question needs, which is why the name
+# states when the failure happened and stops there.
+_PRE_RESPONSE_CLOSE_ERRORS = (ssl.SSLEOFError, ssl.SSLZeroReturnError,
+                              ConnectionResetError, ConnectionRefusedError,
+                              http.client.RemoteDisconnected)
+
+
+def _network_failure_code(error):
+    """Classify a transport-level failure that produced no HTTP response."""
+    return ("pre_http_network_failure" if isinstance(error, _PRE_RESPONSE_CLOSE_ERRORS)
+            else "upstream_unreachable")
+
 
 class IntegrationError(Exception):
     """A failure the API layer turns into a JSON error instead of a 500 page."""
@@ -154,7 +179,7 @@ class UrllibTransport(Transport):
             return HttpResponse(error.code, dict(error.headers or {}), raw)
         except urllib.error.URLError as error:
             raise IntegrationError(f"تعذّر الوصول إلى الخدمة: {error.reason}",
-                                   code="upstream_unreachable") from error
+                                   code=_network_failure_code(error.reason)) from error
         except (socket.timeout, TimeoutError) as error:
             raise IntegrationError("انتهت مهلة الاتصال بالخدمة.",
                                    code="upstream_timeout") from error
@@ -183,7 +208,7 @@ class UrllibTransport(Transport):
                                    code="upstream_timeout") from error
         except (OSError, http.client.HTTPException, ssl.SSLError) as error:
             raise IntegrationError("تعذّر الوصول إلى الخدمة عبر عنوان DNS المثبّت.",
-                                   code="upstream_unreachable") from error
+                                   code=_network_failure_code(error)) from error
         finally:
             connection.close()
 

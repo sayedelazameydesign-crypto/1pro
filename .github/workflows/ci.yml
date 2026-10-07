@@ -24,7 +24,64 @@ jobs:
       # the same number is what stats.json.vector_gate reads for the R5 decision.
       - run: python scripts/rag_eval.py --self-test
       - run: python scripts/rag_eval.py --check
-      - run: python -m unittest discover -s tests -v
+      # R7: the boundary's enforcement tests skip where the kernel forbids
+      # unprivileged user namespaces, and a skip must never read as a pass. This
+      # prints which of the two this runner gives *and* raises it as an annotation,
+      # so a green run states in the pull request that the behavioural proof did
+      # not happen here -- a green tick that hides 22 skipped enforcement tests is
+      # the same lie as a test that passes without asserting anything. It
+      # deliberately does not change kernel policy to make the tests run.
+      - name: Report whether the code-execution boundary can be built here
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("sandbox boundary :", runner.name)
+          print("enforced         :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("missing          :", ", ".join(runner.missing()) or "(nothing)")
+          print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
+          if runner.supports():
+              print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+              print("::notice title=code-execution boundary::%s -- the enforcement "
+                    "tests ran here" % runner.name)
+          else:
+              reason = getattr(runner, "reason", "incomplete boundary")
+              print("=> those tests will SKIP; execution refuses here by design")
+              print("   reason:", reason)
+              print("::warning title=code-execution boundary not built here::%s. The "
+                    "enforcement and host-write tests in tests/test_agent_sandbox.py "
+                    "SKIPPED on this runner, so this run proves the refusal path and "
+                    "nothing about enforcement -- which is a coverage gap to close, "
+                    "not a pass. Reason it gave: %s" % (runner.name, reason))
+          PY
+      # The suite runs exactly as before; what changes is what happens when it
+      # fails. This repository has already paid for the lesson that a red job whose
+      # reason lives only in a downloadable log is a red job nobody can act on, so
+      # each failure is echoed as an annotation -- which is readable through the
+      # API and shown on the pull request -- while the full output stays in the log
+      # for the human who wants the traceback.
+      - name: Run the suite, and say why when it fails
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run(
+              [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+              capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          if result.returncode:
+              print(output[-8000:])
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:8]:
+                  headline, _, body = block.partition("\n")
+                  detail = " ".join(body.split())[:900]
+                  print(f"::error title={headline}::{detail}")
+          else:
+              print(output[-2000:])
+          sys.exit(result.returncode)
+          PY
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
       - run: node tests/browser_answer.test.mjs
@@ -82,7 +139,64 @@ jobs:
       # the same number is what stats.json.vector_gate reads for the R5 decision.
       - run: python scripts/rag_eval.py --self-test
       - run: python scripts/rag_eval.py --check
-      - run: python -m unittest discover -s tests -v
+      # R7: the boundary's enforcement tests skip where the kernel forbids
+      # unprivileged user namespaces, and a skip must never read as a pass. This
+      # prints which of the two this runner gives *and* raises it as an annotation,
+      # so a green run states in the pull request that the behavioural proof did
+      # not happen here -- a green tick that hides 22 skipped enforcement tests is
+      # the same lie as a test that passes without asserting anything. It
+      # deliberately does not change kernel policy to make the tests run.
+      - name: Report whether the code-execution boundary can be built here
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("sandbox boundary :", runner.name)
+          print("enforced         :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("missing          :", ", ".join(runner.missing()) or "(nothing)")
+          print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
+          if runner.supports():
+              print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+              print("::notice title=code-execution boundary::%s -- the enforcement "
+                    "tests ran here" % runner.name)
+          else:
+              reason = getattr(runner, "reason", "incomplete boundary")
+              print("=> those tests will SKIP; execution refuses here by design")
+              print("   reason:", reason)
+              print("::warning title=code-execution boundary not built here::%s. The "
+                    "enforcement and host-write tests in tests/test_agent_sandbox.py "
+                    "SKIPPED on this runner, so this run proves the refusal path and "
+                    "nothing about enforcement -- which is a coverage gap to close, "
+                    "not a pass. Reason it gave: %s" % (runner.name, reason))
+          PY
+      # The suite runs exactly as before; what changes is what happens when it
+      # fails. This repository has already paid for the lesson that a red job whose
+      # reason lives only in a downloadable log is a red job nobody can act on, so
+      # each failure is echoed as an annotation -- which is readable through the
+      # API and shown on the pull request -- while the full output stays in the log
+      # for the human who wants the traceback.
+      - name: Run the suite, and say why when it fails
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run(
+              [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+              capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          if result.returncode:
+              print(output[-8000:])
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:8]:
+                  headline, _, body = block.partition("\n")
+                  detail = " ".join(body.split())[:900]
+                  print(f"::error title={headline}::{detail}")
+          else:
+              print(output[-2000:])
+          sys.exit(result.returncode)
+          PY
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
       - run: node tests/browser_answer.test.mjs

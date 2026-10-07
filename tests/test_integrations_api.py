@@ -62,6 +62,9 @@ def public_resolver(host):
 
 
 class FakeTransport(httpmod.Transport):
+    """Answers in order. An ``Exception`` in the queue is raised instead, so the
+    transport-failure paths are reachable through the real HTTP surface."""
+
     def __init__(self, *answers):
         self.answers = list(answers)
         self.calls = []
@@ -72,7 +75,10 @@ class FakeTransport(httpmod.Transport):
                            "body": body, "resolved_addresses": resolved_addresses})
         if not self.answers:
             raise AssertionError("fake transport called more times than scripted")
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
 class OwnerSurfaceTests(unittest.TestCase):
@@ -354,6 +360,18 @@ class OwnerSurfaceTests(unittest.TestCase):
         result = self.client.get("/api/owner/integrations/github/runs", headers=headers)
         self.assertEqual(result.status_code, 504)
         self.assertEqual(result.headers.get("Retry-After"), "31")
+
+    def test_a_connection_that_died_before_any_response_is_a_504_not_a_verdict(self):
+        # A connection that ends before any response is not a token verdict, so the
+        # code travels to the page as what it is -- a failure with no HTTP response
+        # behind it. The page can then say "unverified" instead of colouring a
+        # healthy token red. 504 and not 502: nothing upstream answered either way.
+        headers = self.login()
+        self.script(httpmod.IntegrationError("TLS/SSL connection has been closed (EOF)",
+                                             code="pre_http_network_failure"))
+        result = self.client.get("/api/owner/integrations/vercel/deployments", headers=headers)
+        self.assertEqual(result.status_code, 504)
+        self.assertEqual(result.get_json()["code"], "pre_http_network_failure")
 
     def test_an_unconfigured_provider_is_a_503(self):
         headers = self.login()

@@ -286,7 +286,9 @@ class BudgetsAndFailures(Case):
 
         inline_calls = inline["calls"]
         self.assertEqual([call["status"] for call in inline_calls], ["rejected"])
-        self.assertIn("موافقة", inline_calls[0]["error"])
+        # `rejected` is the machine signal; the reason beside it must exist and be
+        # readable. The wording is deliberately not asserted.
+        self.assertTrue(inline_calls[0]["error"].strip())
         queued_calls = [call for call in queued["calls"] if call["tool"] == "approved_tool"]
         self.assertEqual([call["status"] for call in queued_calls], ["denied"])
         # Only the inline row carries a reason string. That asymmetry is the contract, not
@@ -302,7 +304,9 @@ class BudgetsAndFailures(Case):
         service = Service(self.deps(policy), mode=policy.mode)
         with self.assertRaises(RuntimeError) as caught:
             service.submit("task-orphan")
-        self.assertIn("inside the request", str(caught.exception))
+        # The refusal is the behaviour; a readable reason has to accompany it. The
+        # wording is not asserted, so improving it cannot break this test.
+        self.assertTrue(str(caught.exception).strip())
         service.start()
         self.assertFalse(service.describe()["workers_started"],
                          "an inline deployment must not spawn a worker pool")

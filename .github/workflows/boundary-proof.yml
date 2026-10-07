@@ -1,0 +1,210 @@
+name: Boundary proof
+
+# Why this workflow exists, and why it is not part of `ci.yml`.
+#
+# The enforcement tests in `tests/test_agent_sandbox.py` need unprivileged user
+# namespaces. The shared `ubuntu-latest` runner refuses them -- the boundary report
+# step in `ci.yml` prints the exact error, `unshare: write failed /proc/self/uid_map:
+# Operation not permitted` -- so CI proves the *refusal* path and states as an
+# annotation that it proved nothing about enforcement.
+#
+# Relaxing `kernel.apparmor_restrict_unprivileged_userns` on the shared runner would
+# turn that into real coverage, and it is refused deliberately: it widens the attack
+# surface of every job on that machine -- including jobs that run repository code and
+# pull requests -- for the sake of one test. A security default is not a knob a test
+# commit gets to turn.
+#
+# The order in which that gap may be closed. It is an order, not a menu:
+#
+#   1. a dedicated VM or microVM (Firecracker) for this job alone, with the
+#      restriction lifted *inside it*. The constraint is in the host kernel, so a
+#      container cannot lift it for itself -- "self-hosted" is not the boundary,
+#      "single purpose" is.
+#   2. capabilities instead of an unprivileged namespace: CAP_SYS_CHROOT and
+#      CAP_SYS_ADMIN on one transient task. The sandbox chroots, so it does not need
+#      an unprivileged user namespace at all. `container:` here cannot grant
+#      capabilities, so this needs `docker run` of our own.
+#   3. this job as it stands: the gap documented, the refusal path proven, the
+#      enforcement proven on a development host, and the annotation saying exactly
+#      that on every run.
+#
+# And the rule that follows from the order: never lift the restriction on a machine
+# that runs anything other than the boundary job.
+#
+# So the coverage lives here instead: one job, on a runner that is *allowed* to build
+# the boundary, running only the enforcement tests. It is `workflow_dispatch` only --
+# never a silent gate that would sit pending on every pull request -- and it fails on
+# a *skip* as well as on a failure. A runner that cannot build what it was hired to
+# build has proven nothing, and a green tick from it would be the same lie the main
+# workflow now refuses to tell.
+#
+# STATUS: this file has never run. There is no `boundary` runner in this repository
+# yet, so it is a note about how the evidence will be produced, not the evidence --
+# and it must not be described as "part of CI" until a run produces a real tick.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # The mutation check deliberately removes `chroot` from the sandbox's init and
+      # then asserts that the host-write test FAILS -- it runs a boundary that can
+      # really write to the host filesystem, which is how the R7.1 finding was
+      # reproduced. Off by default, and it refuses to run outside a container: see
+      # the guard in the step.
+      mutation_check:
+        description: also run the mutation check (runs a sandbox that CAN write to the host)
+        type: boolean
+        default: false
+
+jobs:
+  enforcement:
+    runs-on: [self-hosted, boundary]
+    timeout-minutes: 15
+
+    # The job runs inside a container, so "is this machine disposable?" is answered
+    # by the workflow instead of assumed about someone's server. The container is
+    # created for this job and discarded with it, and everything destructive happens
+    # inside it. Two options are load-bearing and both are narrower than
+    # `--privileged`: apparmor=unconfined is what lets an unprivileged user namespace
+    # exist at all inside the container (the same restriction `ci.yml` refuses to
+    # relax on its host), and seccomp=unconfined keeps older Docker versions from
+    # blocking `unshare` through their default profile. Nothing else is added: no
+    # host paths are mounted beyond the workspace the runner already mounts.
+    #
+    # The runner therefore needs Docker. If it does not have it, this job fails at
+    # container start-up rather than silently degrading to a bare machine.
+    container:
+      image: python:3.11-slim
+      options: --security-opt apparmor=unconfined --security-opt seccomp=unconfined
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python -m pip install -r backend/requirements.txt
+
+      # Fail here, not 40 tests later: if this runner cannot build the boundary there
+      # is nothing for this job to prove, and the reason is the useful part.
+      - name: This runner must be able to build the boundary
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("boundary      :", runner.name)
+          print("enforced      :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("fs isolated   :", runner.filesystem_isolated)
+          print("in container  :", __import__("os").path.exists("/.dockerenv"))
+          if not runner.supports():
+              reason = getattr(runner, "reason", "incomplete boundary")
+              print(f"::error title=this runner cannot build the boundary::{reason}")
+              raise SystemExit(1)
+          PY
+
+      - name: Enforcement tests, and a skip counts as a failure
+        run: |
+          python - <<'PY'
+          import re, subprocess, sys
+
+          result = subprocess.run([sys.executable, "-m", "unittest", "-v",
+                                   "tests.test_agent_sandbox"],
+                                  capture_output=True, text=True)
+          output = result.stdout + result.stderr
+          print(output[-6000:])
+          skipped = int((re.search(r"skipped=(\d+)", output) or ["", "0"])[1])
+          if result.returncode:
+              for block in re.findall(r"^(?:FAIL|ERROR): .*?(?=\n(?:FAIL|ERROR|OK|Ran)|\Z)",
+                                      output, re.M | re.S)[:6]:
+                  headline, _, body = block.partition("\n")
+                  print(f"::error title={headline}::{' '.join(body.split())[:600]}")
+          if skipped:
+              print(f"::error title=enforcement tests skipped here::{skipped} tests skipped on a "
+                    "runner that was supposed to allow them -- this run proves nothing, "
+                    "which is not the same as passing")
+          sys.exit(1 if (result.returncode or skipped) else 0)
+          PY
+
+      # The strongest evidence in the repository: that the host-write test is
+      # falsifiable. Without this, a test that always passes and a boundary that works
+      # look identical from the outside.
+      #
+      # It runs against a *copy* of the tree inside the container, so the repository
+      # the runner checked out is never written to -- and the copy is checked for
+      # afterwards, by comparing every file's contents with a hash taken before the
+      # mutation. "The tree is clean" would be the wrong claim: a runner may
+      # legitimately have local edits, and a check that fails on those is a check
+      # that gets switched off. The claim is "the tree is unchanged", so that is what
+      # is measured.
+      - name: Mutation check -- the host-write test must be able to fail
+        if: ${{ inputs.mutation_check }}
+        run: |
+          python - <<'PY'
+          import hashlib, os, pathlib, shutil, subprocess, sys, tempfile
+
+          # The guard the review asked for: the destructive step may only run where
+          # the machine is discarded with the job. A bare self-hosted machine would
+          # take a real write to its disk because a default said so. The container is
+          # declared in this workflow's `container:`; this is the assertion that the
+          # declaration took effect, because a declaration is not a fact.
+          markers = [p for p in ("/.dockerenv", "/run/.containerenv") if os.path.exists(p)]
+          if not markers:
+              print("::error title=the mutation check needs the disposable container::this "
+                    "job declared `container:` but shows none of the markers a container "
+                    "leaves (/.dockerenv, /run/.containerenv), so it is running on the "
+                    "machine itself. The check removes the sandbox's chroot on purpose -- "
+                    "it runs code with no boundary -- and on a bare runner that code can "
+                    "write to, and read from, that machine. Refusing to run it here.")
+              sys.exit(1)
+          print(f"disposability: {', '.join(markers)}")
+
+          def tree_state(root):
+              """Every tracked file's contents, so "unchanged" is measurable."""
+              state = {}
+              for path in sorted(pathlib.Path(root).rglob("*")):
+                  if (path.is_dir() or ".git" in path.parts or "__pycache__" in path.parts
+                          or path.suffix in (".pyc", ".pyo")):
+                      continue
+                  state[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+              return state
+
+          before = tree_state(".")
+          scratch = tempfile.mkdtemp(prefix="mutation-")
+          try:
+              shutil.copytree(".", scratch, dirs_exist_ok=True,
+                              ignore=shutil.ignore_patterns(".git", "__pycache__"))
+              sandbox = pathlib.Path(scratch, "backend/agent/sandbox.py")
+              original = sandbox.read_text(encoding="utf-8")
+              sabotaged = original.replace('"os.chroot(root);os.chdir(\'/workspace\')\\n"',
+                                           '"os.chdir(root+\'/workspace\')\\n"')
+              assert sabotaged != original, "the chroot step was not found to remove"
+              sandbox.write_text(sabotaged, encoding="utf-8")
+              result = subprocess.run(
+                  [sys.executable, "-m", "unittest",
+                   "tests.test_agent_sandbox.TheBoundaryHoldsAgainstRealCode"
+                   ".test_writing_a_host_path_cannot_touch_the_host"],
+                  cwd=scratch, capture_output=True, text=True)
+              print((result.stdout + result.stderr)[-2500:])
+              victim = pathlib.Path(scratch, "PWNED-BY-SANDBOX.txt")
+              if result.returncode == 0:
+                  print("::error title=the host-write test cannot fail::with the private root "
+                        "mutated it still passed, so it proves nothing")
+                  sys.exit(1)
+              if not victim.exists():
+                  print("::error title=the mutation did not reproduce the finding::the test "
+                        "failed, but no host file was written -- the mutation is not the one "
+                        "it is meant to reproduce")
+                  sys.exit(1)
+              print("::notice title=mutation check::the host-write test failed exactly as it "
+                    "must, and the file it wrote was inside the container's copy, not the "
+                    "repository")
+          finally:
+              shutil.rmtree(scratch, ignore_errors=True)
+
+          after = tree_state(".")
+          if after != before:
+              changed = sorted(set(before) ^ set(after) |
+                               {p for p in set(before) & set(after) if before[p] != after[p]})
+              print(f"::error title=the mutation check wrote to the checkout::the step exists "
+                    f"to prove a failure mode, not to produce one: {changed[:5]}")
+              sys.exit(1)
+          print(f"::notice title=the checkout is unchanged::{len(after)} files, every one with "
+                "the contents it had before the check")
+          PY
