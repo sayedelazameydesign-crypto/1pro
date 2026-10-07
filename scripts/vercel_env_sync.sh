@@ -11,6 +11,12 @@
 # Usage:
 #   scripts/vercel_env_sync.sh --dry-run     # validate only, touch nothing
 #   scripts/vercel_env_sync.sh               # validate, push to Vercel, redeploy
+#   scripts/vercel_env_sync.sh --self-test   # offline: prove the redactor and matcher
+#
+# --dry-run validates the values *and* resolves the Vercel team and project, because
+# a scope that cannot read is a deploy that cannot finish: the run that "validated
+# everything" and then 403'd on its first scoped call is the failure this order
+# exists to prevent.
 #
 # Inputs are environment variables filled from GitHub secrets (any alias wins,
 # first non-empty one in the list is used and named in the report):
@@ -33,10 +39,12 @@ set -uo pipefail
 
 DRY_RUN=0
 NEON_FETCH=1
+SELF_TEST=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --no-neon-fetch) NEON_FETCH=0 ;;
+    --self-test) SELF_TEST=1 ;;
   esac
 done
 
@@ -59,6 +67,43 @@ SECRET_ALIASES=(WAHA_SECRET WAHA_APP_SECRET APP_SECRET FLASK_SECRET WAHA_CSRF_SE
 ORIGIN_ALIASES=(WAHA_ALLOWED_ORIGINS ALLOWED_ORIGINS WAHA_ORIGINS CORS_ORIGINS)
 TOKEN_ALIASES=(VERCEL_TOKEN VERCEL_API_TOKEN VERCEL_ACCESS_TOKEN)
 
+# Match the stored team value against the teams the token can actually see. Kept as one
+# function so the live run and --self-test execute the same code: a test that re-implements
+# the matcher would pass while the matcher was broken.
+team_verdict() { # 1: stored VERCEL_TEAM_ID, 2: fallback slug; stdin: /v2/teams JSON
+  python3 -c '
+import json, sys
+teams = (json.load(sys.stdin) or {}).get("teams") or []
+want = (sys.argv[1] or "").strip()
+slug = (sys.argv[2] or "").strip()
+by_id = next((t for t in teams if want and t.get("id") == want), None)
+by_slug = next((t for t in teams if want and t.get("slug") == want), None)
+named = next((t for t in teams if slug and t.get("slug") == slug), None)
+alternative = named or (teams[0] if len(teams) == 1 else None)
+
+def line(kind, team):
+    team = team or {}
+    print("\t".join([kind, team.get("id") or "",
+                      team.get("name") or team.get("slug") or ""]))
+
+# An absent value is a lookup; a wrong value is a defect. They are never collapsed:
+# "stale" keeps reporting the mismatch even when a usable alternative exists, because
+# quietly replacing a wrong id is how one survives a release.
+if want and by_id:
+    line("match", by_id)
+elif want and by_slug:
+    line("slug", by_slug)
+elif want:
+    line("stale", alternative)
+elif named:
+    line("slugonly", named)
+elif len(teams) == 1:
+    line("single", teams[0])
+else:
+    print("none\t\t")
+' "$1" "$2"
+}
+
 FAILED=0
 ok() { printf 'PASS  %s\n' "$1"; }
 warn() { printf 'WARN  %s\n' "$1"; }
@@ -80,16 +125,26 @@ http_code() { # raw -> exactly three digits, 000 when curl could not connect
 # DSN) with ***. Values are read from the environment by name, never from a shell
 # argument, so they cannot show up in a process list either.
 redact() {
-  python3 - "$@" <<'PY'
+  python3 - "$@" 3<&0 <<'PY'
 import os, re, sys, urllib.parse
-text = sys.stdin.read()
+# The program is read from stdin (the heredoc below), so the text to scrub is read from
+# fd 3 -- a duplicate of the caller's stdin, taken before the heredoc replaced it. An
+# earlier version read sys.stdin here, which is the *program*, so every redacted line
+# came out empty: the database connection error and every Vercel error body were
+# silently dropped from the report. Fail-closed, but blind -- and "a failure names the
+# exact secret to fix" stops being true when the reason never reaches the log.
+# --self-test proves both directions: text passes through, and values are masked.
+text = os.fdopen(3, "r", errors="replace").read()
 for name in sys.argv[1:]:
     value = os.environ.get(name, "")
     if len(value) < 6:
         continue
     text = text.replace(value, "***")
     text = text.replace(urllib.parse.quote(value, safe=""), "***")
-    text = re.sub(r"://[^@/\s]*@", "://***@", text)
+# Structural rule, applied whether or not a named value matched: a password inside any
+# DSN in the text is masked. It used to live inside the loop above, so a call whose
+# names were all short or empty skipped it entirely.
+text = re.sub(r"://[^@/\s]*@", "://***@", text)
 print(text, end="")
 PY
 }
@@ -264,6 +319,54 @@ print(urllib.parse.quote(os.environ["NEON_DERIVED_PASSWORD"], safe=""))')"
   return 0
 }
 
+# --- Offline self-test --------------------------------------------------------
+# Two things must hold without credentials, and both were false once: the redactor must
+# pass text through while masking values (it dropped everything instead), and the team
+# matcher must call a stored value that is not this team's id a defect rather than
+# resolving around it.
+self_test() {
+  local failures=0 checks=0 out
+  expect() { # condition, label
+    checks=$((checks + 1))
+    if [ "$1" != "0" ]; then
+      printf 'self-test FAIL: %s\n' "$2"
+      failures=$((failures + 1))
+    fi
+  }
+
+  export SYNC_SELFTEST_SECRET="ghp_selftestvalue1234567890"
+  out="$(printf 'hello token=%s encoded=%s\n' "$SYNC_SELFTEST_SECRET" \
+        "$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$SYNC_SELFTEST_SECRET")" \
+        | redact SYNC_SELFTEST_SECRET)"
+  [ -n "$out" ] && expect 0 "redact drops nothing" || expect 1 "redact drops nothing"
+  case "$out" in *hello*) expect 0 "redact passes text through" ;; *) expect 1 "redact passes text through" ;; esac
+  case "$out" in *"$SYNC_SELFTEST_SECRET"*) expect 1 "redact masks the raw value" ;; *) expect 0 "redact masks the raw value" ;; esac
+  case "$out" in *ghp_selftestvalue*) expect 1 "redact masks the URL-encoded value" ;; *) expect 0 "redact masks the URL-encoded value" ;; esac
+  out="$(printf 'dsn=postgresql://user:pw@host:5432/db\n' | redact NOTHING)"
+  case "$out" in *"://***@"*) expect 0 "redact masks a password inside a DSN" ;; *) expect 1 "redact masks a password inside a DSN" ;; esac
+
+  local one='{"teams":[{"id":"team_ONE","slug":"one","name":"One"}]}'
+  local two='{"teams":[{"id":"team_ONE","slug":"one","name":"One"},{"id":"team_TWO","slug":"two","name":"Two"}]}'
+  case "$(printf '%s' "$one" | team_verdict team_ONE one)" in match*) expect 0 "a stored id matches" ;; *) expect 1 "a stored id matches" ;; esac
+  case "$(printf '%s' "$one" | team_verdict one one)" in slug*) expect 0 "a stored slug resolves to the id" ;; *) expect 1 "a stored slug resolves to the id" ;; esac
+  case "$(printf '%s' "$two" | team_verdict bogus one)" in stale*) expect 0 "a wrong value is a defect" ;; *) expect 1 "a wrong value is a defect" ;; esac
+  case "$(printf '%s' "$two" | team_verdict '' one)" in slugonly*) expect 0 "an absent value is a lookup" ;; *) expect 1 "an absent value is a lookup" ;; esac
+  case "$(printf '%s' "$one" | team_verdict '' other)" in single*) expect 0 "a lone team is used when named one is missing" ;; *) expect 1 "a lone team is used when named one is missing" ;; esac
+  case "$(printf '%s' "$two" | team_verdict '' other)" in none*) expect 0 "several teams with no match resolve to none" ;; *) expect 1 "several teams with no match resolve to none" ;; esac
+
+  if [ "$failures" -gt 0 ]; then
+    printf 'vercel_env_sync self-test: %s of %s failed\n' "$failures" "$checks"
+    return 1
+  fi
+  printf 'vercel_env_sync self-test: ok (%s checks)\n' "$checks"
+  return 0
+}
+
+if [ "$SELF_TEST" = "1" ]; then
+  self_test
+  exit $?
+fi
+
 echo "== 1/5 GitHub secrets (read from this runner's environment)"
 echo "key                  state"
 if resolve DATABASE_URL "${DATABASE_ALIASES[@]}"; then
@@ -333,24 +436,57 @@ if have "$DATABASE_URL"; then
     *) bad "DATABASE_URL does not start with postgres:// or postgresql:// -- Vercel would keep losing data in /tmp" ;;
   esac
   if python3 -c 'import psycopg' 2>/dev/null; then
-    if DB_URL="$DATABASE_URL" python3 - <<'PY' 2>&1 | redact DATABASE_URL
-import os, sys
+    db_status=0
+    DB_URL="$DATABASE_URL" python3 - <<'PY' 2>&1 | redact DATABASE_URL || db_status=$?
+import os, sys, time
 import psycopg
+
 dsn = os.environ["DB_URL"]
 if "sslmode=" not in dsn:
     dsn = dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
-try:
+
+
+def query():
     with psycopg.connect(dsn, connect_timeout=15) as db:
         server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
         name = db.execute("SELECT current_database()").fetchone()[0]
         print(f"{name!r} answered a live query ({server})")
-except Exception as error:
-    print(f"connection refused: {type(error).__name__}: {error}")
-    sys.exit(1)
+
+
+def rejected(error):
+    """True when the *server* refused the credentials, i.e. a fact about the value.
+
+    A timeout, a refused connection or a DNS failure is a fact about the network right
+    now. Reporting the second as if it were the first sends the operator off to fix a
+    secret that was never broken -- which is what happened on 2026-10-07, when a
+    suspended Neon compute made this step fail once and the run then reported the
+    database URL as wrong. Exit 1 means "the value is rejected", exit 2 means "could
+    not verify", and only the first is evidence about the secret.
+    """
+    state = getattr(error, "sqlstate", "") or ""
+    text = str(error).lower()
+    return state in ("28P01", "28000") or "authentication" in text
+
+
+last = None
+for pause in (0, 5, 15):        # a suspended Neon compute may need a moment to wake
+    if pause:
+        time.sleep(pause)
+    try:
+        query()
+        sys.exit(0)
+    except Exception as error:  # noqa: BLE001 -- classified right below
+        last = error
+        if rejected(error):
+            break
+print(f"connection failed: {type(last).__name__}: {last}")
+sys.exit(1 if rejected(last) else 2)
 PY
-    then ok "the database answered a live query"
-    else bad "the database URL did not connect -- check the password, sslmode, and drop channel_binding=require"
-    fi
+    case "$db_status" in
+      0) ok "the database answered a live query" ;;
+      1) bad "the database rejected the credentials in the URL -- check the password, the role, and drop channel_binding=require" ;;
+      *) bad "could not reach the database after three attempts (looks transient, not a verdict on the value) -- nothing was sent to Vercel; re-run when the network or the Neon endpoint is up" ;;
+    esac
   else
     warn "psycopg is not installed here; skipping the live database check"
   fi
@@ -391,52 +527,122 @@ esac
 
 if [ "$FAILED" -gt 0 ]; then
   echo
-  echo "Stopping: $FAILED value(s) are wrong (not merely missing), so nothing was sent to Vercel."
-  exit 1
+  if [ "$DRY_RUN" = "1" ]; then
+    # A dry run changes nothing anywhere, so it keeps going and reports the rest. Stopping
+    # at the first bad value made the operator fix one variable, re-run, find the next --
+    # which is how a broken database URL hid a broken team id for a whole run.
+    warn "$FAILED check(s) failed (not merely missing); continuing so the rest of the report is complete"
+  else
+    echo "Stopping: $FAILED value(s) are wrong (not merely missing), so nothing was sent to Vercel."
+    exit 1
+  fi
 fi
 
+# The token is needed for the read below, not only for the write later, so it is
+# checked here. A dry run still reports a missing token without failing: it is a
+# validator, and "you have not stored the token yet" is a finding, not an error.
+NO_TOKEN=0
+if ! have "$VERCEL_TOKEN"; then
+  NO_TOKEN=1
+fi
+echo
+
+echo "== 3/5 Resolve the Vercel team and project"
+TEAM_QUERY=""
+if [ "$NO_TOKEN" = "1" ]; then
+  warn "VERCEL_TOKEN is not set, so the team and project cannot be resolved yet"
+else
+  # VERCEL_TEAM_ID is a claim, not a fact, and nothing used to check it: the value was
+  # trusted verbatim and interpolated into every scoped URL. A value that is not one of
+  # this token's team ids -- a slug, a project id, or a stale value from another account
+  # -- is rejected by every endpoint that takes it, and the rejection reads as
+  # "Not authorized", which points at the token instead of at the variable. Observed
+  # live on 2026-10-07: a 60-character value in VERCEL_TEAM_ID made /v9/projects and
+  # /v6/deployments answer 403 for a token that answered 200 for the canonical id.
+  # So: ask /v2/teams what this token can actually see, and only then use its answer.
+  call GET "/v2/teams?limit=20"
+  teams_json="$RESP"
+  if [ "$CODE" != "200" ]; then
+    bad "listing the teams for this token returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
+  else
+    selected="$(echo "$teams_json" | team_verdict "$VERCEL_TEAM_ID" "$TEAM_SLUG")"
+    IFS=$'\t' read -r verdict team_id team_name <<<"$selected"
+    case "$verdict" in
+      match)
+        ok "team from VERCEL_TEAM_ID ($team_name)"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      slug)
+        warn "VERCEL_TEAM_ID holds the team *slug* (\"$VERCEL_TEAM_ID\"), which Vercel accepts in its dashboard but not in a scoped API call -- using the id $team_id instead. Store that id to silence this."
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      stale)
+        warn "VERCEL_TEAM_ID holds a value that is not one of the team ids this token can see (length ${#VERCEL_TEAM_ID}, no \"team_\" prefix unless it was pasted with one). Every scoped Vercel call would have answered 403 \"Not authorized\" -- the deploy would have stopped here, reading as a token problem."
+        if [ -n "$team_id" ]; then
+          warn "using $team_name ($team_id) instead for this run; store that id in the VERCEL_TEAM_ID secret."
+          VERCEL_TEAM_ID="$team_id"
+          TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
+        else
+          bad "and no alternative could be resolved: this token sees several teams, none of them named \"$TEAM_SLUG\""
+          echo "Set VERCEL_TEAM_ID to the id shown in Vercel -> Team Settings -> Team ID."
+          exit 1
+        fi ;;
+      slugonly)
+        ok "team \"$TEAM_SLUG\" resolved"
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      single)
+        warn "no VERCEL_TEAM_ID is stored and \"$TEAM_SLUG\" names no team this token can see; using the only team available ($team_name). Store its id ($team_id) to silence this."
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      *)
+        bad "VERCEL_TEAM_ID matches no team this token can see and \"$TEAM_SLUG\" resolves to none of them"
+        echo "Set VERCEL_TEAM_ID to the id shown in Vercel -> Team Settings -> Team ID."
+        exit 1 ;;
+    esac
+  fi
+fi
+
+# Skipped without a token on purpose: a lookup that cannot authenticate must not be
+# reported as a resolution. The earlier version ran it anyway and printed PASS for a
+# project name it had never actually read.
+if [ "$NO_TOKEN" = "1" ]; then
+  warn "the project is not resolved either; that needs VERCEL_TOKEN"
+else
+  project_ref="${VERCEL_PROJECT_ID:-$PROJECT_NAME}"
+  call GET "/v9/projects/$project_ref?$TEAM_QUERY"
+  if [ "$CODE" != "200" ]; then
+    bad "project lookup \"$project_ref\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
+    echo "Check VERCEL_PROJECT_ID (the id from Vercel -> Project -> Settings) and the team."
+    exit 1
+  fi
+  PROJECT_ID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+  PROJECT_NAME="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
+  have "$PROJECT_ID" || { bad "the project response carried no id"; exit 1; }
+  ok "project \"$PROJECT_NAME\" resolved ($PROJECT_ID)"
+fi
+echo
+
 if [ "$DRY_RUN" = "1" ]; then
-  echo
-  echo "Dry run: every value above is acceptable and nothing was changed on Vercel."
+  if [ "$FAILED" -gt 0 ]; then
+    echo "Dry run: $FAILED check(s) failed above; nothing was changed on Vercel."
+    exit 1
+  fi
+  if [ "$NO_TOKEN" = "1" ]; then
+    echo "Dry run: every value above is acceptable, but the Vercel scope was NOT proved"
+    echo "(no VERCEL_TOKEN); nothing was changed on Vercel."
+  else
+    echo "Dry run: every value above is acceptable and the Vercel scope resolved;"
+    echo "nothing was changed on Vercel."
+  fi
   exit 0
 fi
 
-if ! have "$VERCEL_TOKEN"; then
+if [ "$NO_TOKEN" = "1" ]; then
   echo
   echo "Add an Actions secret named VERCEL_TOKEN (Vercel -> Account Settings -> Tokens,"
   echo "scope: the team that owns the project), then run this workflow again."
   exit 3
 fi
-echo
-
-echo "== 3/5 Resolve the Vercel project"
-TEAM_QUERY=""
-if have "$VERCEL_TEAM_ID"; then
-  TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
-  ok "team from VERCEL_TEAM_ID"
-else
-  call GET "/v2/teams?slug=$TEAM_SLUG"
-  if [ "$CODE" != "200" ]; then
-    bad "team lookup by slug \"$TEAM_SLUG\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
-    echo "Set VERCEL_TEAM_ID instead (Vercel -> Team Settings -> Team ID)."
-    exit 1
-  fi
-  VERCEL_TEAM_ID="$(echo "$RESP" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("teams") or [{}])[0].get("id",""))')"
-  have "$VERCEL_TEAM_ID" || { bad "the slug \"$TEAM_SLUG\" resolved to no team"; exit 1; }
-  TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
-  ok "team \"$TEAM_SLUG\" resolved"
-fi
-
-project_ref="${VERCEL_PROJECT_ID:-$PROJECT_NAME}"
-call GET "/v9/projects/$project_ref?$TEAM_QUERY"
-if [ "$CODE" != "200" ]; then
-  bad "project lookup \"$project_ref\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
-  exit 1
-fi
-PROJECT_ID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
-PROJECT_NAME="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
-have "$PROJECT_ID" || { bad "the project response carried no id"; exit 1; }
-ok "project \"$PROJECT_NAME\" resolved ($PROJECT_ID)"
 echo
 
 echo "== 4/5 Write the Production variables"
