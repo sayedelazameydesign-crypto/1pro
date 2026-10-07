@@ -587,6 +587,57 @@ class AgentCase(unittest.TestCase):
         resp = self.client.get("/api/agent/tasks?status=invalid_status", headers=self.headers())
         self.assertEqual(resp.status_code, 400)
 
+    def test_typed_events_and_data_fields(self):
+        self.use_script([plan(["احسب"]), action("calculator", expression="7+7"), final("14"), final("r")])
+        task_id = self.create(goal="احسب سبعة زائد سبعة").get_json()["task"]["id"]
+        self.wait(task_id)
+
+        resp = self.client.get(f"/api/agent/tasks/{task_id}/events", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        events = resp.get_json()["events"]
+        event_types = [e["type"] for e in events]
+        self.assertIn("step.started", event_types)
+        self.assertIn("step.completed", event_types)
+        self.assertIn("tool.requested", event_types)
+        self.assertIn("tool.result", event_types)
+        for e in events:
+            self.assertIn("ts", e)
+            self.assertIn("data", e)
+            self.assertEqual(e["data"], e["payload"])
+            self.assertEqual(e["task_id"], task_id)
+
+    def test_approval_scopes_and_task_allowance(self):
+        task_id = backend.agent_store.create_task(self.user, "هدف موافقة تجريبي", "gemini", "model", time.time() + 60)
+        call_id = backend.agent_store.create_call(task_id, 1, "web_fetch", {"url": "https://example.com"}, True)
+
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/approve",
+                                data=json.dumps({"approval_id": call_id, "decision": "allow_once"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+        self.assertEqual(resp.get_json()["decision"], "approved")
+
+        task_id2 = backend.agent_store.create_task(self.user, "هدف ثانٍ للموافقة", "gemini", "model", time.time() + 60)
+        call_id2 = backend.agent_store.create_call(task_id2, 1, "web_fetch", {"url": "https://example.com"}, True)
+        resp = self.client.post(f"/api/agent/tasks/{task_id2}/approve",
+                                data=json.dumps({"call_id": call_id2, "decision": "allow_task"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["decision"], "allow_task")
+        self.assertTrue(backend.agent_store.is_tool_allowed_for_task(task_id2, "web_fetch"))
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id2, "other_tool"))
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id, "web_fetch"))
+        backend.agent_store.clear_task_allowances(task_id2)
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id2, "web_fetch"))
+
+        task_id3 = backend.agent_store.create_task(self.user, "هدف ثالث للرفض", "gemini", "model", time.time() + 60)
+        call_id3 = backend.agent_store.create_call(task_id3, 1, "web_fetch", {"url": "https://example.com"}, True)
+        resp = self.client.post(f"/api/agent/tasks/{task_id3}/approve",
+                                data=json.dumps({"approval_id": call_id3, "decision": "deny"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["decision"], "denied")
+
 
 if __name__ == "__main__":
     unittest.main()
