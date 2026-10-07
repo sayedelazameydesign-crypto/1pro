@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 364 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
+على `sqlite` و`postgres` معًا: 371 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -50,6 +50,10 @@ tests/               اختبارات بدون اتصال AI أو أسرار
 .github/workflows/   CI + نشر Pages يدوي بإذن المالك
 .github/ISSUE_TEMPLATE/
 ```
+
+`CAPABILITY-MATRIX.md` يقابل القدرات بـClaude وManus: ٨٩ قدرة موسومة
+`Implemented/Partial/Missing/Mocked` بدليل من الكود لكل صف، ومرتّبة P0/P1/P2.
+`tests/test_capability_matrix.py` يفشل إذا لم يعد الدليل يتحقق — فلا تتقادم المصفوفة صامتة.
 
 ## جرّب نسخة Pages محلياً
 
