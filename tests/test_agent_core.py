@@ -33,9 +33,14 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(len(normalize_plan(raw, "الهدف", 5)), 5)
 
     def test_missing_plan_degrades_to_single_step(self):
-        plan = normalize_plan(None, "علّمني أساسيات بايثون في خمس خطوات", 5)
+        goal = "علّمني أساسيات بايثون في خمس خطوات"
+        plan = normalize_plan(None, goal, 5)
         self.assertEqual(len(plan), 1)
-        self.assertIn("بايثون", plan[0]["goal"])
+        # The whole goal, compared to itself: the claim is "the user's goal becomes
+        # the single step", which is stronger than "a word of it appears" -- and the
+        # word happened to coincide with one the tool copy also contains, which is
+        # exactly the kind of coincidence a fragment assertion turns into noise.
+        self.assertEqual(plan[0]["goal"], goal)
 
     def test_string_steps_are_accepted(self):
         plan = normalize_plan({"steps": ["اكتب مقدمة", "اكتب خاتمة"]}, "goal", 5)
@@ -136,7 +141,11 @@ class RegistryTests(unittest.TestCase):
         prompt = registry.prompt_text(type("C", (), {"NETWORK_TOOLS": False}))
         self.assertIn("calculator(", prompt)
         self.assertNotIn("web_fetch(", prompt)
-        self.assertIn("needs user approval", registry.prompt_text(type("C", (), {"NETWORK_TOOLS": True})))
+        # The marker is asserted through the flag it is rendered from: same decision,
+        # no dependency on the wording of the label.
+        gated = registry.get("web_fetch", type("C", (), {"NETWORK_TOOLS": True}))
+        self.assertTrue(gated.requires_approval)
+        self.assertIn("web_fetch(", registry.prompt_text(type("C", (), {"NETWORK_TOOLS": True})))
 
     def test_unknown_args_rejected(self):
         registry = build_registry()

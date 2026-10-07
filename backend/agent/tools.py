@@ -64,7 +64,19 @@ ARTIFACT_NAME = re.compile(r"^[A-Za-z0-9_\u0600-\u06FF][A-Za-z0-9_.\u0600-\u06FF
 
 class ToolError(Exception):
     """A recoverable, user-presentable tool failure. The loop records it and
-    lets the model react instead of killing the task."""
+    lets the model react instead of killing the task.
+
+    `code` is the machine-readable half of the message, and it exists so the suite
+    can assert a *decision* rather than a sentence. A test that checks "the refusal
+    says X" fails the day someone improves the Arabic, which teaches people to
+    weaken tests; a test that checks the code keeps guarding the behaviour while the
+    copy stays free to change. Messages are for the model and the operator; codes
+    are for the tests.
+    """
+
+    def __init__(self, message, code="tool_error"):
+        super().__init__(message)
+        self.code = code
 
 
 # --- calculator ---------------------------------------------------------------
@@ -230,7 +242,8 @@ def _kb_search(ctx, args):
         # read the same index — WAHA_RAG_DIR cannot fork the two paths apart.
         payload = rag_search.search(query, k=limit, index_dir=getattr(ctx, "rag_index_dir", None))
     except rag_search.RagSearchUnavailable as error:
-        raise ToolError(f"مكتبة المعرفة غير متاحة على هذا الخادم: {error}")
+        raise ToolError(f"مكتبة المعرفة غير متاحة على هذا الخادم: {error}",
+                        code="kb_unavailable")
 
     results, used, evidence_truncated = [], 0, False
     for row in payload["results"]:
@@ -283,7 +296,10 @@ def _kb_search(ctx, args):
     if evidence_truncated:
         out["evidence_truncated"] = True
         notes.append(f"اقتُطعت بقية الأدلة عند حد السياق {MAX_KB_CONTEXT_CHARS} حرفاً.")
-    if out["results"] and not any(row["matched_directly"] for row in out["results"]):
+    inferred_only = bool(out["results"]) and not any(row["matched_directly"]
+                                                    for row in out["results"])
+    out["inferred_only"] = inferred_only
+    if inferred_only:
         notes.append("كل المطابقات مُستنتَجة لا حرفية؛ لا قدّمها كاقتباس مباشر من المصدر.")
     if notes:
         out["note"] = " ".join(notes)
@@ -309,13 +325,15 @@ def _artifact_write(ctx, args):
     if kind not in ARTIFACT_KINDS:
         raise ToolError("أنواع الملفات المسموحة: " + ", ".join(sorted(ARTIFACT_KINDS)) + ".")
     if not ARTIFACT_NAME.match(name):
-        raise ToolError("اسم الملف يجب أن يكون قصيراً وبلا مسارات أو شرطات مائلة.")
+        raise ToolError("اسم الملف يجب أن يكون قصيراً وبلا مسارات أو شرطات مائلة.",
+                        code="unsafe_artifact_name")
     if not content.strip():
         raise ToolError("لا يمكن حفظ ملف فارغ.")
     if len(content.encode("utf-8")) > ctx.config.MAX_ARTIFACT_BYTES:
         raise ToolError("الملف أكبر من الحد المسموح في الخطة المجانية.")
     if kind == "html" and re.search(r"<\s*script[^>]*\s*src\s*=", content, re.I):
-        raise ToolError("لا تُقبل سكربتات خارجية داخل المعاينة؛ ضع الكود داخل الملف نفسه.")
+        raise ToolError("لا تُقبل سكربتات خارجية داخل المعاينة؛ ضع الكود داخل الملف نفسه.",
+                        code="external_scripts_blocked")
     artifact_id = ctx.store.put_artifact(ctx.task_id, ctx.user_id, name, kind, content)
     return {"artifact_id": artifact_id, "name": name, "kind": kind,
             "bytes": len(content.encode("utf-8")),
@@ -351,7 +369,8 @@ def _code_exec(ctx, args):
         raise ToolError(
             "تنفيذ الكود غير متاح على هذا الخادم: لا يمكن بناء حدود عزل تفرض "
             + "، ".join(missing)
-            + ". (" + getattr(runner, "reason", runner.name) + ")")
+            + ". (" + getattr(runner, "reason", runner.name) + ")",
+            code="boundary_missing")
     limits = sandbox.Limits(
         timeout_seconds=config.CODE_EXEC_TIMEOUT_SECONDS,
         memory_mb=config.CODE_EXEC_MEMORY_MB,
@@ -363,7 +382,7 @@ def _code_exec(ctx, args):
     try:
         outcome = runner.run(sandbox.RunRequest(code=code, limits=limits))
     except sandbox.SandboxRefused as refusal:
-        raise ToolError(f"لم يُنفَّذ الكود: {refusal.message}") from refusal
+        raise ToolError(f"لم يُنفَّذ الكود: {refusal.message}", code=refusal.code) from refusal
     observation = outcome.as_observation()
     # The workspace is the sandbox's writable directory, and it is `/workspace`
     # because the mount is what makes a host path unreachable -- a program that

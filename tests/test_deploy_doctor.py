@@ -81,7 +81,9 @@ class CheckTests(unittest.TestCase):
         self.assertIn("WAHA_TRUSTED_HOSTS", codes(errors))
         errors, _w, _n = check(dict(env, RENDER_EXTERNAL_HOSTNAME="waha.onrender.com"),
                                target="render")
-        self.assertNotIn("hostname موثوق", codes(errors))
+        # The code, not the sentence: presenting a valid hostname must retire the
+        # complaint, and that is a statement about codes(errors), not about wording.
+        self.assertNotIn("WAHA_TRUSTED_HOSTS", codes(errors))
 
     def test_trusted_hosts_must_be_exact_hostnames_without_wildcards_or_ports(self):
         errors, _w, _n = check(dict(GOOD, WAHA_TRUSTED_HOSTS="*.example.test,api.test:443"),

@@ -188,11 +188,13 @@ class TheRefusalPathFailsClosed(unittest.TestCase):
         runner = sandbox.detect(which=lambda name: "/usr/bin/unshare",
                                 runner=lambda *a, **k: failed, use_cache=False)
         self.assertIsInstance(runner, sandbox.UnavailableRunner)
-        # Both probes are named in the refusal: an operator reading the log should
-        # not have to guess which of the two the kernel denied.
-        self.assertIn("private root", runner.reason)
+        self.assertFalse(runner.supports())
+        # Nothing is enforced -- asserted against the capability set, not against a
+        # sentence -- and the kernel's own words are relayed rather than replaced by
+        # a summary: "Operation not permitted" is what the operator needs to see, and
+        # it is the stub's text, so this asserts relaying, not our copy.
+        self.assertEqual(set(runner.missing()), set(sandbox.CAPABILITIES))
         self.assertIn("Operation not permitted", runner.reason)
-        self.assertIn("refused", runner.reason)
 
     def test_detect_returns_the_refusing_runner_when_the_binary_is_absent(self):
         runner = sandbox.detect(which=lambda name: None, use_cache=False)
@@ -291,10 +293,16 @@ class CodeExecIsOffAndGated(unittest.TestCase):
         self.assertFalse(tool.network)
 
     def test_the_tool_refuses_with_a_reason_when_no_boundary_exists(self):
+        """Asserted by code, never by wording. A test that checks the sentence fails
+        the day someone improves the Arabic and passes the day the decision changes
+        quietly -- so the machine-readable half is what the suite guards, and the
+        message only has to exist for the operator to read."""
         runner = sandbox.UnavailableRunner("no `unshare` on this machine")
         with self.assertRaises(ToolError) as caught:
             call_code_exec({"code": "print(1)"}, runner=runner)
-        self.assertIn("no `unshare` on this machine", str(caught.exception))
+        self.assertEqual(caught.exception.code, "boundary_missing")
+        self.assertTrue(str(caught.exception).strip(),
+                        "a refusal nobody can read is not a refusal")
 
     def test_a_refused_call_is_an_error_the_loop_can_record(self):
         """`runtime._run_tool` catches ToolError and stores it as data; that contract
@@ -302,7 +310,10 @@ class CodeExecIsOffAndGated(unittest.TestCase):
         runner = sandbox.NamespaceRunner("/usr/bin/unshare")
         with self.assertRaises(ToolError) as caught:
             call_code_exec({"code": "print(1)"}, runner=runner)
-        self.assertIn("filesystem_isolation", str(caught.exception))
+        self.assertEqual(caught.exception.code, "boundary_missing")
+        # ...and the reason it is refused is the capability set, asserted where that
+        # set lives rather than read out of a sentence.
+        self.assertIn(sandbox.CAPABILITY_FILESYSTEM_ISOLATION, runner.missing())
 
     def test_the_prompt_only_advertises_it_when_turned_on(self):
         class Off:
@@ -355,8 +366,9 @@ class TheBoundaryHoldsAgainstRealCode(unittest.TestCase):
         elapsed = time.time() - started
         self.assertTrue(outcome.timed_out)
         self.assertLess(elapsed, 20, "the deadline must bound the wall clock too")
-        self.assertIn("timed out", outcome.error)
         self.assertNotEqual(outcome.exit_status, 0)
+        self.assertTrue(outcome.error.strip(),
+                        "a killed run must say so in the record, whatever the wording")
 
     def test_a_grandchild_does_not_outlive_the_deadline(self):
         """A kill that only reaps the direct child leaves a forked helper running."""

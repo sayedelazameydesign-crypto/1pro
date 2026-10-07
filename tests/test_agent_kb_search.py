@@ -209,7 +209,10 @@ class FailureModes(unittest.TestCase):
             with self.assertRaises(ToolError) as caught:
                 call("بريد", index_dir=Path(tmp))
         message = str(caught.exception)
-        self.assertIn("مكتبة المعرفة غير متاحة", message)
+        # The decision is asserted by code; the wording is not asserted at all, so it
+        # can be improved without touching this test. What must survive is the
+        # operator-facing cause, and `rag_index` is the identifier it has to carry.
+        self.assertEqual(caught.exception.code, "kb_unavailable")
         self.assertIn("rag_index", message.lower(), "the operator-facing reason must survive")
 
     def test_unsearchable_query_is_reported_not_invented(self):
@@ -251,8 +254,10 @@ class Permissions(unittest.TestCase):
     def test_prompt_text_labels_it_read_only(self):
         line = next(item for item in REGISTRY.prompt_text(self.CONFIG).splitlines()
                     if "kb_search" in item)
-        self.assertIn("[read-only]", line)
-        self.assertNotIn("needs user approval", line)
+        self.assertIn("[read-only]", line)          # the marker itself is structure
+        # The approval marker is *absent* because the flag is false -- asserted on the
+        # flag, which is the source of truth the line is rendered from.
+        self.assertFalse(REGISTRY.get("kb_search", self.CONFIG).requires_approval)
 
     def test_the_model_cannot_grant_itself_arguments(self):
         for extra in ({"requires_approval": False}, {"auto_approve": True}, {"threshold": 0.9},
@@ -308,7 +313,10 @@ class Budgets(unittest.TestCase):
                           return_value=canned([{"snippet": "مقطع", "score": 1.0, "weight": 0.45}])):
             out = call("الوقت")
         self.assertFalse(out["results"][0]["matched_directly"])
-        self.assertIn("مُستنتَجة", out["note"])
+        # The qualifier is a field now, not only a note: the model gets something
+        # machine-readable, and the suite asserts that instead of the sentence.
+        self.assertTrue(out["inferred_only"])
+        self.assertTrue(out["note"].strip(), "the model is also told in words")
 
 
 class NoOwnership(unittest.TestCase):
