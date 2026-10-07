@@ -276,6 +276,7 @@ GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المت�
 ```bash
 # القراءتان فقط (بلا تغيير في الحالة)
 GITHUB_TOKEN=… GITHUB_REPO=… VERCEL_TOKEN=… VERCEL_PROJECT_ID=… \
+VERCEL_TEAM_ID=team_… \
   python scripts/integrations_live_check.py
 
 # والعمليتان الكتابيتان — تبدآن تشغيل CI فعليًا ونشرًا إنتاجيًا فعليًا
@@ -322,7 +323,7 @@ python scripts/integrations_live_check.py --self-test
 | `GITHUB_REPO` | `owner/name` | صيغة خاطئة تُرفض بـ`invalid_config` قبل أي نداء شبكة |
 | `GITHUB_WORKFLOW_ID` | اسم الملف أو رقمه | بدونه تبقى القراءة متاحة وتُعطَّل كتابة `dispatch` وحدها |
 | `VERCEL_TOKEN` | من Vercel | للقراءة فقط. لا يستطيع النشر: النشر يمرّ بالـhook |
-| `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` | من لوحة Vercel | ‏`TEAM_ID` مطلوب لحساب فرق؛ بدونه يُسأل الحساب الشخصي |
+| `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` | من لوحة Vercel | ‏`TEAM_ID` **معرّف** لا اسم: ‏`team_…` و`prj_…`. الـslug أو قيمة قديمة تُرفض بـ`403 Not authorized` في كل نداء مقيّد فتبدو المشكلة في الرمز لا في المتغيّر؛ `deploy_doctor` وسكربت المزامنة يفحصان الشكل الآن |
 | `DEPLOY_HOOK_URL` | من Vercel · Deploy Hooks | **الرابط نفسه هو السر**، فيُعامَل كسرّ: لا يُنشر ولا يُسجَّل. يقبل فقط HTTPS على `api.vercel.com`؛ تُفحص كل إجابات DNS كعناوين عامة ثم تُثبَّت في الاتصال مع إبقاء اسم المضيف للتحقق من TLS، فلا توجد نافذة DNS-rebinding بين الفحص والاتصال |
 | `WAHA_OWNER_ALLOWED_ORIGINS` | اختياري | قائمة CORS **خاصة بصفحة الإدارة**، مستقلة عن `WAHA_ALLOWED_ORIGINS`. افتراضيًا: نفس المصدر فقط، لكن بعد قبول Host صريح من `TRUSTED_HOSTS` |
 | `WAHA_TRUSTED_HOSTS` | اختياري على المنصة، مطلوب للمضيفات المخصصة وملف الفحص المحلي | أسماء مضيفين exact مفصولة بفواصل، بلا scheme أو port أو wildcard. Render يثق تلقائيًا بـ`RENDER_EXTERNAL_HOSTNAME`، وVercel بـ`VERCEL_URL` وأصل الإنتاج؛ أضف هنا النطاق المخصص. `deploy_doctor` يرفض نشرًا عامًا بلا مصدر host موثوق |

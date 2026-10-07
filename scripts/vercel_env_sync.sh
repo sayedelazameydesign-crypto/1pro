@@ -12,6 +12,11 @@
 #   scripts/vercel_env_sync.sh --dry-run     # validate only, touch nothing
 #   scripts/vercel_env_sync.sh               # validate, push to Vercel, redeploy
 #
+# --dry-run validates the values *and* resolves the Vercel team and project, because
+# a scope that cannot read is a deploy that cannot finish: the run that "validated
+# everything" and then 403'd on its first scoped call is the failure this order
+# exists to prevent.
+#
 # Inputs are environment variables filled from GitHub secrets (any alias wins,
 # first non-empty one in the list is used and named in the report):
 #   DATABASE_URL | NEON_DATABASE_URL | DATABASE_PRIVATE_URL | POSTGRES_URL | ...
@@ -395,48 +400,153 @@ if [ "$FAILED" -gt 0 ]; then
   exit 1
 fi
 
+# The token is needed for the read below, not only for the write later, so it is
+# checked here. A dry run still reports a missing token without failing: it is a
+# validator, and "you have not stored the token yet" is a finding, not an error.
+NO_TOKEN=0
+if ! have "$VERCEL_TOKEN"; then
+  NO_TOKEN=1
+fi
+echo
+
+echo "== 3/5 Resolve the Vercel team and project"
+TEAM_QUERY=""
+if [ "$NO_TOKEN" = "1" ]; then
+  warn "VERCEL_TOKEN is not set, so the team and project cannot be resolved yet"
+else
+  # VERCEL_TEAM_ID is a claim, not a fact, and nothing used to check it: the value was
+  # trusted verbatim and interpolated into every scoped URL. A value that is not one of
+  # this token's team ids -- a slug, a project id, or a stale value from another account
+  # -- is rejected by every endpoint that takes it, and the rejection reads as
+  # "Not authorized", which points at the token instead of at the variable. Observed
+  # live on 2026-10-07: a 60-character value in VERCEL_TEAM_ID made /v9/projects and
+  # /v6/deployments answer 403 for a token that answered 200 for the canonical id.
+  # So: ask /v2/teams what this token can actually see, and only then use its answer.
+  call GET "/v2/teams?limit=20"
+  teams_json="$RESP"
+  if [ "$CODE" != "200" ]; then
+    bad "listing the teams for this token returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
+  else
+    selected="$(echo "$teams_json" | T="$VERCEL_TEAM_ID" S="$TEAM_SLUG" python3 -c '
+import json, os, sys
+"""-> "kind<TAB>id<TAB>name", one of:
+
+match    the stored VERCEL_TEAM_ID is the id of a team this token can see  -> use it
+slug     the stored value is that team*s slug* -- valid in the dashboard, rejected by
+         scoped API calls -- so the id is used instead, loudly
+stale    a value IS stored and matches nothing: it is reported as such, never quietly
+         replaced. The id/name fields carry the best alternative, if there is one.
+slugonly no value is stored and TEAM_SLUG names one of the visible teams
+single   no value is stored and exactly one team is visible
+none     nothing to resolve from
+
+An absent value is a lookup; a wrong value is a defect. Collapsing the two is how a
+stale team id survives a release, so they are kept apart here.
+"""
+try:
+    teams = json.load(sys.stdin).get("teams") or []
+except ValueError:
+    teams = []
+want = os.environ.get("T", "").strip()
+slug = os.environ.get("S", "").strip()
+by_id = next((t for t in teams if want and t.get("id") == want), None)
+by_slug = next((t for t in teams if want and t.get("slug") == want), None)
+named = next((t for t in teams if slug and t.get("slug") == slug), None)
+alternative = named or (teams[0] if len(teams) == 1 else None)
+def line(kind, team):
+    team = team or {}
+    print("\t".join([kind, team.get("id") or "",
+                      team.get("name") or team.get("slug") or ""]))
+if want and by_id:
+    line("match", by_id)
+elif want and by_slug:
+    line("slug", by_slug)
+elif want:
+    line("stale", alternative)
+elif named:
+    line("slugonly", named)
+elif len(teams) == 1:
+    line("single", teams[0])
+else:
+    print("none\t\t")
+' 2>/dev/null || printf 'none\t\t\n')"
+    IFS=$'\t' read -r verdict team_id team_name <<<"$selected"
+    case "$verdict" in
+      match)
+        ok "team from VERCEL_TEAM_ID ($team_name)"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      slug)
+        warn "VERCEL_TEAM_ID holds the team *slug* (\"$VERCEL_TEAM_ID\"), which Vercel accepts in its dashboard but not in a scoped API call -- using the id $team_id instead. Store that id to silence this."
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      stale)
+        warn "VERCEL_TEAM_ID holds a value that is not one of the team ids this token can see (length ${#VERCEL_TEAM_ID}, no \"team_\" prefix unless it was pasted with one). Every scoped Vercel call would have answered 403 \"Not authorized\" -- the deploy would have stopped here, reading as a token problem."
+        if [ -n "$team_id" ]; then
+          warn "using $team_name ($team_id) instead for this run; store that id in the VERCEL_TEAM_ID secret."
+          VERCEL_TEAM_ID="$team_id"
+          TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
+        else
+          bad "and no alternative could be resolved: this token sees several teams, none of them named \"$TEAM_SLUG\""
+          echo "Set VERCEL_TEAM_ID to the id shown in Vercel -> Team Settings -> Team ID."
+          exit 1
+        fi ;;
+      slugonly)
+        ok "team \"$TEAM_SLUG\" resolved"
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      single)
+        warn "no VERCEL_TEAM_ID is stored and \"$TEAM_SLUG\" names no team this token can see; using the only team available ($team_name). Store its id ($team_id) to silence this."
+        VERCEL_TEAM_ID="$team_id"
+        TEAM_QUERY="teamId=$VERCEL_TEAM_ID" ;;
+      *)
+        bad "VERCEL_TEAM_ID matches no team this token can see and \"$TEAM_SLUG\" resolves to none of them"
+        echo "Set VERCEL_TEAM_ID to the id shown in Vercel -> Team Settings -> Team ID."
+        exit 1 ;;
+    esac
+  fi
+fi
+
+# Skipped without a token on purpose: a lookup that cannot authenticate must not be
+# reported as a resolution. The earlier version ran it anyway and printed PASS for a
+# project name it had never actually read.
+if [ "$NO_TOKEN" = "1" ]; then
+  warn "the project is not resolved either; that needs VERCEL_TOKEN"
+else
+  project_ref="${VERCEL_PROJECT_ID:-$PROJECT_NAME}"
+  call GET "/v9/projects/$project_ref?$TEAM_QUERY"
+  if [ "$CODE" != "200" ]; then
+    bad "project lookup \"$project_ref\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
+    echo "Check VERCEL_PROJECT_ID (the id from Vercel -> Project -> Settings) and the team."
+    exit 1
+  fi
+  PROJECT_ID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+  PROJECT_NAME="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
+  have "$PROJECT_ID" || { bad "the project response carried no id"; exit 1; }
+  ok "project \"$PROJECT_NAME\" resolved ($PROJECT_ID)"
+fi
+echo
+
 if [ "$DRY_RUN" = "1" ]; then
-  echo
-  echo "Dry run: every value above is acceptable and nothing was changed on Vercel."
+  if [ "$FAILED" -gt 0 ]; then
+    echo "Dry run: $FAILED check(s) failed above; nothing was changed on Vercel."
+    exit 1
+  fi
+  if [ "$NO_TOKEN" = "1" ]; then
+    echo "Dry run: every value above is acceptable, but the Vercel scope was NOT proved"
+    echo "(no VERCEL_TOKEN); nothing was changed on Vercel."
+  else
+    echo "Dry run: every value above is acceptable and the Vercel scope resolved;"
+    echo "nothing was changed on Vercel."
+  fi
   exit 0
 fi
 
-if ! have "$VERCEL_TOKEN"; then
+if [ "$NO_TOKEN" = "1" ]; then
   echo
   echo "Add an Actions secret named VERCEL_TOKEN (Vercel -> Account Settings -> Tokens,"
   echo "scope: the team that owns the project), then run this workflow again."
   exit 3
 fi
-echo
-
-echo "== 3/5 Resolve the Vercel project"
-TEAM_QUERY=""
-if have "$VERCEL_TEAM_ID"; then
-  TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
-  ok "team from VERCEL_TEAM_ID"
-else
-  call GET "/v2/teams?slug=$TEAM_SLUG"
-  if [ "$CODE" != "200" ]; then
-    bad "team lookup by slug \"$TEAM_SLUG\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
-    echo "Set VERCEL_TEAM_ID instead (Vercel -> Team Settings -> Team ID)."
-    exit 1
-  fi
-  VERCEL_TEAM_ID="$(echo "$RESP" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("teams") or [{}])[0].get("id",""))')"
-  have "$VERCEL_TEAM_ID" || { bad "the slug \"$TEAM_SLUG\" resolved to no team"; exit 1; }
-  TEAM_QUERY="teamId=$VERCEL_TEAM_ID"
-  ok "team \"$TEAM_SLUG\" resolved"
-fi
-
-project_ref="${VERCEL_PROJECT_ID:-$PROJECT_NAME}"
-call GET "/v9/projects/$project_ref?$TEAM_QUERY"
-if [ "$CODE" != "200" ]; then
-  bad "project lookup \"$project_ref\" returned HTTP $CODE: $(echo "$RESP" | redact "${REDACT_NAMES[@]}" | head -c 200)"
-  exit 1
-fi
-PROJECT_ID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
-PROJECT_NAME="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
-have "$PROJECT_ID" || { bad "the project response carried no id"; exit 1; }
-ok "project \"$PROJECT_NAME\" resolved ($PROJECT_ID)"
 echo
 
 echo "== 4/5 Write the Production variables"

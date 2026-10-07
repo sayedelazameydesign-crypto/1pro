@@ -241,6 +241,29 @@ def check(env, target="render", vercel_path=None):
             errors.append("DEPLOY_HOOK_URL يجب أن يستهدف api.vercel.com فقط؛ لا تُستخدم وجهات "
                           "مخصّصة في Hook النشر.")
 
+    # 5b) The Vercel team identity, which nothing used to check. Every scoped Vercel
+    # call takes it as `teamId=`, and the API accepts only the *id* (`team_…`): a slug,
+    # a project id, or a stale value answers 403 "Not authorized" on every read and
+    # write. That rejection names the token, not the variable, so it survives review as
+    # "the token is bad" -- which is exactly how a 60-character value in VERCEL_TEAM_ID
+    # went unnoticed until a live check read /v2/teams and compared (2026-10-07).
+    # Shape-only and offline: the value is never printed.
+    team_ref = env.get("VERCEL_TEAM_ID", "").strip()
+    if team_ref and not team_ref.startswith("team_"):
+        errors.append("VERCEL_TEAM_ID ليس معرّف فريق: يجب أن يبدأ بـ`team_` (Vercel → Team "
+                      "Settings → Team ID). القيم الأخرى — الـslug أو معرّف مشروع أو قيمة "
+                      "قديمة — تُرفض بـ403 «Not authorized» في كل نداء مقيّد، فتبدو المشكلة "
+                      "في الرمز لا في المتغيّر.")
+    project_ref = env.get("VERCEL_PROJECT_ID", "").strip()
+    if project_ref:
+        if any(char in project_ref for char in " \t/?#") :
+            errors.append("VERCEL_PROJECT_ID يُستخدم كقطعة مسار في رابط Vercel، فلا يقبل "
+                          "مسافة ولا `/`. استخدم معرّف المشروع `prj_…`.")
+        elif not project_ref.startswith("prj_"):
+            warnings.append("VERCEL_PROJECT_ID لا يبدأ بـ`prj_`؛ الاسم يعمل ما دام فريدًا في "
+                            "نطاق الفريق، أما المعرّف فيعمل دائمًا (Vercel → Project → "
+                            "Settings → Project ID).")
+
     # 6) The static front door's pointer to the API.
     config_path = ROOT / "docs" / "data" / "config.json"
     api_base = ""
@@ -425,6 +448,15 @@ def self_test():
          None, False),
         ("sqlite db", dict(good, DATABASE_URL="sqlite:///x.db?sslmode=require"), None, False),
         ("placeholder key", dict(good, GEMINI_API_KEY="changeme"), None, False),
+        # The Vercel team identity: only the id works, so a slug or a stale value is an
+        # error rather than a silent 403 at deploy time.
+        ("team id that is really a slug", dict(good, VERCEL_TEAM_ID="celia-fashions-projects"),
+         None, False),
+        ("stale team value", dict(good, VERCEL_TEAM_ID="x" * 60), None, False),
+        ("project ref with a slash", dict(good, VERCEL_PROJECT_ID="a/b"), None, False),
+        ("shapes that are right", dict(good, VERCEL_TEAM_ID="team_KaDefEE8HBoecXfntoJUw2TZ",
+                                       VERCEL_PROJECT_ID="prj_2qy6p3q63at2AZerXZHIxUX3GpJf"),
+         None, True),
     ]
     failures = []
     for label, env, _expected, should_pass in cases:
@@ -437,6 +469,10 @@ def self_test():
     errors, warnings, _notes = check(direct, target="render")
     if errors or not any("pooled" in item for item in warnings):
         failures.append("direct endpoint should warn, not fail")
+    # A project *name* is legal but weaker, so it must warn, not fail.
+    errors, warnings, _notes = check(dict(good, VERCEL_PROJECT_ID="cela"), target="vercel")
+    if errors or not any("prj_" in item for item in warnings):
+        failures.append("a project name should warn, not fail")
     # A vercel deploy without WAHA_SECRET must fail.
     errors, _w, _n = check({k: v for k, v in good.items() if k != "WAHA_SECRET"}, target="vercel")
     if not any("WAHA_SECRET" in item for item in errors):
