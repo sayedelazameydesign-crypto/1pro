@@ -569,6 +569,24 @@ class AgentCase(unittest.TestCase):
                                     headers=other_headers)
         self.assertEqual(resp_bad.status_code, 404)
 
+    def test_task_history_filters(self):
+        self.use_script([plan(["احسب"]), action("calculator", expression="2*2"), final("4"), final("r")])
+        t1 = self.create(goal="مهمة مكتملة أرقام").get_json()["task"]["id"]
+        self.wait(t1)
+
+        resp = self.client.get("/api/agent/tasks?status=completed", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        tasks = resp.get_json()["tasks"]
+        self.assertTrue(all(t["status"] == "completed" for t in tasks))
+        self.assertTrue(any(t["id"] == t1 for t in tasks))
+
+        resp = self.client.get("/api/agent/tasks?status=running", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(any(t["id"] == t1 for t in resp.get_json()["tasks"]))
+
+        resp = self.client.get("/api/agent/tasks?status=invalid_status", headers=self.headers())
+        self.assertEqual(resp.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
