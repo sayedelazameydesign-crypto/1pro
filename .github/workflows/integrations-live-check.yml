@@ -92,6 +92,48 @@ jobs:
           cat /tmp/names.txt
           printf '::warning title=credential-names::%s\n' "$(paste -sd'|' /tmp/names.txt)"
 
+      # The token is the credential under test, so its *validity and scope* are
+      # proven before it is handed to the checker: GET /v9/projects answers 200
+      # with the projects this token can see (wrong team -> 403, bad token -> 401),
+      # and the id it returns is exactly the value VERCEL_PROJECT_ID wants. Only
+      # names and ids are ever printed; never the token.
+      - name: Ask Vercel which projects this token can see
+        id: discover
+        run: |
+          set -uo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            printf 'VERCEL_PROJECTS_HTTP=skip (no VERCEL_TOKEN)\n' > /tmp/discover.txt
+            echo "VERCEL_TOKEN is not set; discovery skipped"
+            exit 0
+          fi
+          query="limit=20"
+          if [ -n "${VERCEL_TEAM_ID:-}" ]; then
+            query="$query&teamId=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$VERCEL_TEAM_ID")"
+          fi
+          code="$(curl -sS -o /tmp/projects.json -w '%{http_code}' --max-time 30 \
+                    -H "Authorization: Bearer $VERCEL_TOKEN" \
+                    "https://api.vercel.com/v9/projects?$query" || echo 000)"
+          err="$(jq -r '.error.message // .error.code // empty' /tmp/projects.json 2>/dev/null)"
+          listed="$(jq -r '.projects[]? | "\(.name) (id=\(.id))"' /tmp/projects.json 2>/dev/null | paste -sd', ' -)"
+          printf 'http=%s projects=%s error=%s\n' "$code" "${listed:-(none)}" "${err:-none}"
+          {
+            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code"
+            printf 'VERCEL_PROJECTS_LIST=%s\n' "${listed:-(none)}"
+          } >> /tmp/discover.txt
+          # Prefer the project the sync script defaults to ("cela"), else the only
+          # one, else the first. Never overwrite a value the operator already set.
+          chosen="$(jq -r '[.projects[]?.id] | (map(select(. != null))) | .[0] // empty' /tmp/projects.json 2>/dev/null)"
+          named="$(jq -r '.projects[]? | select(.name == "cela" or .name == "1pro" or .name == "cela-umber") | .id' /tmp/projects.json 2>/dev/null | head -1)"
+          [ -n "$named" ] && chosen="$named"
+          if [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            printf 'VERCEL_PROJECT_ID already set; discovery is informational only\n'
+          elif [ -n "$chosen" ]; then
+            printf 'VERCEL_PROJECT_ID=%s\n' "$chosen" >> "$GITHUB_ENV"
+            printf 'adopted project id from discovery\n' 
+          else
+            printf 'no project id discoverable; the checker will report it as missing\n'
+          fi
+
       # Proves the checker before trusting its verdict, exactly as CI does.
       - name: Self-test the checker offline first
         run: python scripts/integrations_live_check.py --self-test
@@ -103,7 +145,7 @@ jobs:
           set -uo pipefail
           status=0
           python scripts/integrations_live_check.py > /tmp/live.txt 2> /tmp/live.err || status=$?
-          echo "status=$status" >> /tmp/live.status
+          printf '%s\n' "$status" > /tmp/live.status
           echo "--- stdout ---"; cat /tmp/live.txt
           echo "--- stderr ---"; cat /tmp/live.err
           echo "exit=$status"
@@ -124,7 +166,9 @@ jobs:
           done
           status="$(cat /tmp/live.status 2>/dev/null || echo '?')"
           err="$(tr '\n' '|' < /tmp/live.err 2>/dev/null | head -c 700)"
+          disc="$(tr '\n' '|' < /tmp/discover.txt 2>/dev/null | head -c 900)"
           printf '::warning title=live-check-exit::exit=%s stderr=%s\n' "$status" "${err:-(none)}"
+          [ -n "$disc" ] && printf '::warning title=vercel-discovery::%s\n' "$disc"
 
       - name: Fail the run when the checker did not pass
         run: |
