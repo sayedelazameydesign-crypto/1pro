@@ -362,16 +362,16 @@ class OwnerSurfaceTests(unittest.TestCase):
         self.assertEqual(result.headers.get("Retry-After"), "31")
 
     def test_a_connection_that_died_before_any_response_is_a_504_not_a_verdict(self):
-        # An egress filter closing the handshake is not a token verdict, so the code
-        # travels to the page as the network code it is -- the page can then say
-        # "unverified" instead of colouring a healthy token red. 504 and not 502:
-        # nothing upstream answered either way.
+        # A connection that ends before any response is not a token verdict, so the
+        # code travels to the page as what it is -- a failure with no HTTP response
+        # behind it. The page can then say "unverified" instead of colouring a
+        # healthy token red. 504 and not 502: nothing upstream answered either way.
         headers = self.login()
         self.script(httpmod.IntegrationError("TLS/SSL connection has been closed (EOF)",
-                                             code="egress_blocked"))
+                                             code="pre_http_network_failure"))
         result = self.client.get("/api/owner/integrations/vercel/deployments", headers=headers)
         self.assertEqual(result.status_code, 504)
-        self.assertEqual(result.get_json()["code"], "egress_blocked")
+        self.assertEqual(result.get_json()["code"], "pre_http_network_failure")
 
     def test_an_unconfigured_provider_is_a_503(self):
         headers = self.login()

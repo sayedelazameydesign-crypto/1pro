@@ -769,7 +769,7 @@ def integration_error_response(error):
         status = 502
     elif error.code in ("github_unavailable", "vercel_unavailable",
                         "upstream_unreachable", "upstream_timeout",
-                        "egress_blocked"):
+                        "pre_http_network_failure"):
         status = 504
     body, http_status = fail(error.message, status, error.code)
     if error.retry_after is not None:

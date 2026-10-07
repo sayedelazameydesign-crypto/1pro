@@ -270,15 +270,15 @@ class TransportGuardTests(unittest.TestCase):
     def test_a_dead_connection_is_graded_by_when_it_failed_not_by_how_loud_it_looked(self):
         """A failure with no HTTP response is not a verdict on the credential.
 
-        The sandbox case that motivated this: an egress filter closes the TLS
-        handshake, so the token is never sent and never answered. Every code below
-        lands in ``NETWORK_FAILURE_CODES``, which is what the live checker reads to
-        report BLOCKED -- reporting FAIL there would blame a working token for a
-        network policy, and the two have opposite fixes.
+        The case that motivated this: a connection ends before any response, so the
+        token is never sent and never answered. Every code below lands in
+        ``NETWORK_FAILURE_CODES``, which is what the live checker reads to report
+        BLOCKED -- reporting FAIL there would blame a working token for a transport
+        failure, and the two have opposite fixes.
         """
         cases = ((ssl.SSLZeroReturnError("TLS/SSL connection has been closed (EOF)"),
-                  "egress_blocked"),
-                 (ConnectionResetError("reset by peer"), "egress_blocked"),
+                  "pre_http_network_failure"),
+                 (ConnectionResetError("reset by peer"), "pre_http_network_failure"),
                  (socket.timeout("no answer"), "upstream_timeout"),
                  (OSError("generic transport failure"), "upstream_unreachable"))
         for error, expected in cases:
@@ -291,6 +291,11 @@ class TransportGuardTests(unittest.TestCase):
                         resolved_addresses=[PUBLIC_IP])
                 self.assertEqual(caught.exception.code, expected)
                 self.assertIn(caught.exception.code, httpmod.NETWORK_FAILURE_CODES)
+        # The name claims *when*, never *why*: a port with nothing listening and a
+        # peer that closed the handshake have different causes and get one code,
+        # because the socket cannot tell them apart and neither can this code.
+        self.assertEqual(httpmod._network_failure_code(ConnectionRefusedError("refused")),
+                         httpmod._network_failure_code(ssl.SSLEOFError("closed")))
         # The inverse is the whole point of the set: an answered 401 is a credential
         # verdict, and no status-bearing code may be excused as a network problem.
         for code in ("ghp_unauthorized", "github_forbidden", "vercel_not_found",

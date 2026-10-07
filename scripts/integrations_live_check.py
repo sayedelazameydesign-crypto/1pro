@@ -18,15 +18,23 @@ run whenever credentials exist; writes need the flag.
 
 A failure is graded by *when* it happened, not by how alarming it looks. An HTTP
 401 is a credential verdict and reports FAIL. A connection that dies before any
-response exists -- a TLS handshake torn down by an egress filter, a refused
-connection, a DNS failure, a timeout -- never asked the credential anything, so it
-reports BLOCKED rather than failing a working token for the network's behaviour.
-Conflating the two is how a sandbox restriction becomes a false accusation
-against a healthy credential, and the two have opposite fixes.
+response exists -- a TLS handshake torn down, a refused port, a DNS failure, a
+timeout -- never asked the credential anything, so it reports BLOCKED rather than
+failing a working token for the network's behaviour. Conflating the two is how a
+transport failure becomes a false accusation against a healthy credential, and the
+two have opposite fixes.
+
+Note what is *not* claimed. BLOCKED deliberately names no cause: a middlebox, a
+firewall, a closed port and an upstream that walked away are indistinguishable
+from this side of the socket, so the checker states only what it can prove -- no
+HTTP response ever existed, so the credential was never judged.
 
 Exit codes: 0 every attempted check passed; 1 a credential or permission check
-failed; 2 nothing reached an upstream API, so nothing was verified at all;
-3 nothing failed, but at least one check was blocked before it could ask.
+failed; 2 no check was attempted at all, so nothing was verified; 3 nothing
+failed, but at least one check was blocked before it could ask. 1 outranks 3,
+which outranks 2, and that order is the contract: a proven credential failure is
+never masked by an unverified one, and a check that was attempted and blocked is
+not the same thing as a check nobody asked for.
 
 Secrets never reach stdout. Every message is passed through the same redactor the
 API uses, and the exit path re-scans the whole transcript before printing it.
@@ -165,6 +173,25 @@ def unconfigured_checks(config):
     return out
 
 
+def exit_code(results):
+    """The verdict of a run, in one place and testable without a network.
+
+    Precedence is the contract here, not a set of independent numbers: a proven
+    credential failure outranks an unverified check, and a check that was
+    attempted and blocked outranks the empty run that never asked. Getting the
+    order wrong is invisible in a passing run and wrong exactly when it matters --
+    an all-blocked run used to report 2, which reads as "nothing was configured"
+    while a credential sat unverified.
+    """
+    if any(item.status == FAIL for item in results):
+        return 1
+    if any(item.status == BLOCKED for item in results):
+        return 3
+    if not any(item.status == PASS for item in results):
+        return 2
+    return 0
+
+
 def render(results, as_json=False):
     if as_json:
         return json.dumps([item.as_dict() for item in results], indent=2,
@@ -225,24 +252,27 @@ def main(argv=None):
     failed = [item for item in results if item.status == FAIL]
     blocked = [item for item in results if item.status == BLOCKED]
     passed = [item for item in results if item.status == PASS]
-    if not passed:
-        print("\nnothing was verified: no check reached an upstream API.",
-              file=sys.stderr)
-        return 2
-    if failed:
+    code = exit_code(results)
+    if code == 2:
+        print("\nnothing was verified: no check was attempted -- every operation "
+              "was skipped. Configure the credentials (or pass --allow-mutations "
+              "for the write checks) and re-run.", file=sys.stderr)
+    elif code == 1:
         print(f"\n{len(failed)} check(s) failed.", file=sys.stderr)
-        return 1
-    if blocked:
+        if blocked:
+            print(f"{len(blocked)} further check(s) were BLOCKED before any HTTP "
+                  "response and stay unverified.", file=sys.stderr)
+    elif code == 3:
         # Deliberately not exit 0: some of the asked-for work is unverified. And
         # deliberately not exit 1: nothing here says a credential is bad.
         print(f"\n{len(blocked)} check(s) BLOCKED before any HTTP response, so the "
               "credential was never judged -- this is not a token verdict.\n"
-              "Re-run where the vendor API is reachable; a GitHub Actions runner "
-              "has open egress and this repo already passes both variables there.",
+              "Re-run where the vendor API is reachable; a runner with unrestricted "
+              "network access can, and this repo already passes both variables there.",
               file=sys.stderr)
-        return 3
-    print(f"\n{len(passed)} live check(s) passed.")
-    return 0
+    else:
+        print(f"\n{len(passed)} live check(s) passed.")
+    return code
 
 
 def self_test(config):
@@ -351,11 +381,12 @@ def self_test(config):
     failures += expect(statuses["workflow dispatch"] == PASS, "dispatch reports PASS")
     failures += expect(statuses["deploy hook"] == PASS, "deploy hook reports PASS")
 
-    # 7. A connection that dies before any response is BLOCKED, not FAIL. This is the
-    # sandbox case in miniature: an egress filter tears down the TLS handshake, no
-    # token is ever sent, and FAIL would accuse a working credential.
+    # 7. A connection that dies before any response is BLOCKED, not FAIL. No token
+    # was ever sent, and FAIL would accuse a working credential for the network's
+    # behaviour. The code names the observable fact only -- the socket cannot say
+    # whether a middlebox, a firewall or the upstream itself ended the connection.
     egress = httpmod.IntegrationError("TLS/SSL connection has been closed (EOF)",
-                                      code="egress_blocked")
+                                      code="pre_http_network_failure")
     results = run(config=cfgmod.load(full),
                   service=IntegrationService(cfgmod.load(full), resolver=resolver,
                                              transport=FakeTransport(egress, egress)))
@@ -364,8 +395,8 @@ def self_test(config):
                        "a pre-HTTP connection failure is BLOCKED, not FAIL")
     failures += expect(statuses["GET deployments"] == BLOCKED,
                        "a pre-HTTP connection failure is BLOCKED, not FAIL")
-    failures += expect("egress_blocked" in render(results),
-                       "the report names the network code, so egress is not read as a bad token")
+    failures += expect("pre_http_network_failure" in render(results),
+                       "the report names when it failed, so it is not read as a bad token")
     failures += expect(not any(item.status == PASS for item in results),
                        "a blocked run claims nothing")
 
@@ -394,6 +425,25 @@ def self_test(config):
                        "a blocked dispatch never claims a CI run started")
     failures += expect(statuses["deploy hook"] == BLOCKED,
                        "a blocked deploy hook never claims a deployment was triggered")
+
+    # 11. The exit-code contract, pinned as precedence rather than as separate
+    # numbers. The all-blocked case is the one that was wrong: it returned 2, which
+    # reads as "nothing was configured" while a credential sat unverified.
+    def verdict(*statuses):
+        return exit_code([Result("GitHub", "GET workflow runs", status)
+                          for status in statuses])
+
+    failures += expect(verdict(PASS) == 0, "a passed run exits 0")
+    failures += expect(verdict(PASS, SKIP) == 0, "verifying half still exits 0")
+    failures += expect(verdict(FAIL) == 1, "a failed run exits 1")
+    failures += expect(verdict(FAIL, BLOCKED) == 1,
+                       "a proven credential failure outranks an unverified one")
+    failures += expect(verdict(BLOCKED) == 3, "an all-blocked run exits 3, not 2")
+    failures += expect(verdict(BLOCKED, SKIP) == 3, "one blocked check is enough for 3")
+    failures += expect(verdict(PASS, BLOCKED) == 3,
+                       "a partial pass does not hide an unverified check")
+    failures += expect(verdict(SKIP) == 2, "a run that attempted nothing exits 2")
+    failures += expect(verdict(SKIP, SKIP) == 2, "skips alone are still 2")
 
     if failures:
         print(f"integrations live checker self-test: {failures} of {checks} failed",
