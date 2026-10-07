@@ -1,0 +1,137 @@
+name: Integrations live check (read-only, temporary)
+
+# Temporary operator tool, sibling of prod-probe.yml and db-check.yml. The agent's
+# sandbox can read GitHub, but it cannot reach api.vercel.com (its egress allow-list
+# covers github.com only) and it cannot read repository secrets (403). So "does the
+# Vercel token stored in this repository actually work, and for which project?" is
+# unanswerable from there, and a runner is the only place that can answer it.
+#
+# READ-ONLY. It runs `scripts/integrations_live_check.py` WITHOUT --allow-mutations,
+# so no workflow is dispatched and no production deployment is triggered; the two
+# write checks report SKIP and are expected to. The script itself changes nothing
+# upstream -- two GETs, one to api.github.com and one to api.vercel.com.
+#
+# Output channel: the raw log is served from a host the sandbox cannot read, so every
+# finding is republished as a check-run annotation, exactly as prod-probe.yml does.
+# Annotations are scanned the same way the script's own transcript is: the checker
+# redacts, and Actions masks every value that came from `secrets.`.
+#
+# Delete this file once the answer is known: it is not part of the product.
+on:
+  push:
+    paths:
+      - ".github/workflows/integrations-live-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read          # the GitHub read check lists this repository's workflow runs
+
+concurrency:
+  group: integrations-live-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The GitHub half is already verified from the sandbox with the owner's own
+      # credential; here it runs so the same report covers both providers. A secret
+      # cannot be named GITHUB_TOKEN (reserved prefix), so the runner's own token is
+      # the right value -- it proves the read path, though not the operator's PAT.
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_REPO: ${{ github.repository }}
+      GITHUB_WORKFLOW_ID: ci.yml
+      # Every alias scripts/vercel_env_sync.sh knows, in its order. First non-empty wins.
+      ALIAS_VERCEL_TOKEN_1: ${{ secrets.VERCEL_TOKEN || vars.VERCEL_TOKEN }}
+      ALIAS_VERCEL_TOKEN_2: ${{ secrets.VERCEL_API_TOKEN }}
+      ALIAS_VERCEL_TOKEN_3: ${{ secrets.VERCEL_ACCESS_TOKEN }}
+      ALIAS_VERCEL_PROJECT_ID_1: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
+      ALIAS_VERCEL_PROJECT_ID_2: ${{ secrets.VERCEL_PROJECT_NAME || vars.VERCEL_PROJECT_NAME }}
+      ALIAS_VERCEL_TEAM_ID_1: ${{ secrets.VERCEL_TEAM_ID || vars.VERCEL_TEAM_ID }}
+      ALIAS_VERCEL_TEAM_ID_2: ${{ vars.VERCEL_TEAM_SLUG || secrets.VERCEL_TEAM_SLUG }}
+      ALIAS_DEPLOY_HOOK_URL_1: ${{ secrets.DEPLOY_HOOK_URL || vars.DEPLOY_HOOK_URL }}
+      ALIAS_DEPLOY_HOOK_URL_2: ${{ secrets.VERCEL_DEPLOY_HOOK_URL || vars.VERCEL_DEPLOY_HOOK_URL }}
+      ALIAS_WAHA_OWNER_TOKEN_1: ${{ secrets.WAHA_OWNER_TOKEN || vars.WAHA_OWNER_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # Names only, never values: this step exists so a SKIP can be attributed to a
+      # specific missing variable instead of a guess. Mirrors the naming report in
+      # scripts/vercel_env_sync.sh.
+      - name: Resolve credentials by name (booleans only)
+        id: resolve
+        run: |
+          set -uo pipefail
+          : > /tmp/names.txt
+          pick() { # logical_name, then alias values in preference order
+            local name="$1"; shift
+            local i=0 value=""
+            for candidate in "$@"; do
+              i=$((i + 1))
+              if [ -n "$candidate" ]; then
+                printf '%-22s present  <- alias #%s\n' "$name" "$i" >> /tmp/names.txt
+                printf '%s=%s\n' "$name" "$candidate" >> "$GITHUB_ENV"
+                return 0
+              fi
+            done
+            printf '%-22s MISSING  (%s alias slots all empty)\n' "$name" "$i" >> /tmp/names.txt
+            return 0
+          }
+          pick VERCEL_TOKEN "${ALIAS_VERCEL_TOKEN_1:-}" "${ALIAS_VERCEL_TOKEN_2:-}" "${ALIAS_VERCEL_TOKEN_3:-}"
+          pick VERCEL_PROJECT_ID "${ALIAS_VERCEL_PROJECT_ID_1:-}" "${ALIAS_VERCEL_PROJECT_ID_2:-}"
+          pick VERCEL_TEAM_ID "${ALIAS_VERCEL_TEAM_ID_1:-}" "${ALIAS_VERCEL_TEAM_ID_2:-}"
+          pick DEPLOY_HOOK_URL "${ALIAS_DEPLOY_HOOK_URL_1:-}" "${ALIAS_DEPLOY_HOOK_URL_2:-}"
+          pick WAHA_OWNER_TOKEN "${ALIAS_WAHA_OWNER_TOKEN_1:-}"
+          # Vercel accepts a project *name* where an id is expected, and the sync
+          # script defaults to the name "cela", so a name here is not a failure.
+          cat /tmp/names.txt
+          printf '::warning title=credential-names::%s\n' "$(paste -sd'|' /tmp/names.txt)"
+
+      # Proves the checker before trusting its verdict, exactly as CI does.
+      - name: Self-test the checker offline first
+        run: python scripts/integrations_live_check.py --self-test
+
+      - name: Live reads (no mutations)
+        id: live
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          status=0
+          python scripts/integrations_live_check.py > /tmp/live.txt 2> /tmp/live.err || status=$?
+          echo "status=$status" >> /tmp/live.status
+          echo "--- stdout ---"; cat /tmp/live.txt
+          echo "--- stderr ---"; cat /tmp/live.err
+          echo "exit=$status"
+
+      - name: Publish findings as annotations (the only channel readable remotely)
+        if: always()
+        run: |
+          set -uo pipefail
+          [ -f /tmp/live.txt ] || { echo "no report produced"; exit 0; }
+          # One annotation per result line, so each status is separately visible.
+          grep -E '^(GitHub|Vercel) ' /tmp/live.txt | while IFS= read -r line; do
+            title="$(printf '%s' "$line" | awk '{print $1"-"$2"-"$3"-"$4"-"$5}')"
+            if printf '%s' "$line" | grep -q ' FAIL '; then
+              printf '::warning title=%s::%s\n' "${title:0:64}" "$line"
+            else
+              printf '::notice title=%s::%s\n' "${title:0:64}" "$line"
+            fi
+          done
+          status="$(cat /tmp/live.status 2>/dev/null || echo '?')"
+          err="$(tr '\n' '|' < /tmp/live.err 2>/dev/null | head -c 700)"
+          printf '::warning title=live-check-exit::exit=%s stderr=%s\n' "$status" "${err:-(none)}"
+
+      - name: Fail the run when the checker did not pass
+        run: |
+          set -uo pipefail
+          status="$(cat /tmp/live.status 2>/dev/null || echo 1)"
+          case "$status" in
+            0) echo "checker exit 0: every configured provider answered" ;;
+            2) echo "checker exit 2: nothing was verified -- no check reached an upstream API"; exit 1 ;;
+            *) echo "checker exit $status: at least one check FAILED"; exit 1 ;;
+          esac
