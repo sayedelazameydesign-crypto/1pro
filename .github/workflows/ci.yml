@@ -24,6 +24,28 @@ jobs:
       # the same number is what stats.json.vector_gate reads for the R5 decision.
       - run: python scripts/rag_eval.py --self-test
       - run: python scripts/rag_eval.py --check
+      # R7: the boundary's enforcement tests skip where the kernel forbids
+      # unprivileged user namespaces, and a skip must never read as a pass. This
+      # prints which of the two this runner gives, so the CI log answers the
+      # question instead of the reader assuming it. It deliberately does not
+      # change kernel policy to make the tests run.
+      - name: Report whether the code-execution boundary can be built here
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("sandbox boundary :", runner.name)
+          print("enforced         :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("missing          :", ", ".join(runner.missing()) or "(nothing)")
+          print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
+          if runner.supports():
+              print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+          else:
+              print("=> those tests will SKIP; execution refuses here by design")
+              print("   reason:", getattr(runner, "reason", "incomplete boundary"))
+          PY
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
@@ -82,6 +104,28 @@ jobs:
       # the same number is what stats.json.vector_gate reads for the R5 decision.
       - run: python scripts/rag_eval.py --self-test
       - run: python scripts/rag_eval.py --check
+      # R7: the boundary's enforcement tests skip where the kernel forbids
+      # unprivileged user namespaces, and a skip must never read as a pass. This
+      # prints which of the two this runner gives, so the CI log answers the
+      # question instead of the reader assuming it. It deliberately does not
+      # change kernel policy to make the tests run.
+      - name: Report whether the code-execution boundary can be built here
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "backend")
+          from agent import sandbox
+          runner = sandbox.detect()
+          print("sandbox boundary :", runner.name)
+          print("enforced         :", ", ".join(sorted(runner.capabilities)) or "(none)")
+          print("missing          :", ", ".join(runner.missing()) or "(nothing)")
+          print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
+          if runner.supports():
+              print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+          else:
+              print("=> those tests will SKIP; execution refuses here by design")
+              print("   reason:", getattr(runner, "reason", "incomplete boundary"))
+          PY
       - run: python -m unittest discover -s tests -v
       - run: node --check docs/assets/app.js && node --check docs/assets/components.js && node --check docs/assets/answer.js && node --check backend/static/app.js && node --check backend/static/answer.js
       - run: node tests/browser_search.test.mjs
