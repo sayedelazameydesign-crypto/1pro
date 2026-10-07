@@ -100,21 +100,25 @@ REDACT_NAMES=()
 RESOLVED_FROM=""
 PRESENT_NAMES=()
 resolve() { # resolve VARNAME candidate1 candidate2 ...
-  local target="$1" candidate value found=""
+  # The target is usually also the first candidate (DATABASE_URL <- DATABASE_URL,
+  # NEON_DATABASE_URL, ...), so the result is written only after every candidate has
+  # been read. Clearing the target up front -- which an earlier version did -- wiped
+  # the very value being looked for and made every present key look missing.
+  local target="$1" candidate value found="" found_value=""
   shift
-  printf -v "$target" '%s' ""   # the name always exists, even when nothing matched (set -u)
   PRESENT_NAMES=()
   for candidate in "$@"; do
     value="${!candidate:-}"
     if have "$value"; then
       PRESENT_NAMES+=("$candidate")
       if ! have "$found"; then
-        printf -v "$target" '%s' "$value"
         found="$candidate"
+        found_value="$value"
         REDACT_NAMES+=("$candidate")
       fi
     fi
   done
+  printf -v "$target" '%s' "$found_value"   # the name exists even when nothing matched (set -u)
   RESOLVED_FROM="$found"
   have "$found"
 }
