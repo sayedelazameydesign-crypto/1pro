@@ -134,15 +134,15 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          n=0
-          while IFS= read -r line; do
-            case "$line" in
-              PASS*|FAIL*|WARN*|"Stopping:"*|"All checks"*|"script-exit"*|"Add an Actions"*|"Dry run"*)
-                n=$((n + 1))
-                [ "$n" -le 10 ] || continue
-                printf '::warning title=sync%02d::%s\n' "$n" "$line" ;;
-            esac
-          done < "$log"
+          # GitHub keeps only ten warning annotations per step, so the report is
+          # folded into three: which names were found, how they validated, and how
+          # the run ended. Values never appear here -- the log is already redacted.
+          keys="$(grep -E '^(DATABASE_URL|GEMINI_API_KEY|WAHA_SECRET|WAHA_ALLOWED_ORIGINS|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_TEAM_ID) ' "$log" | paste -sd'|' -)"
+          checks="$(grep -E '^(PASS|FAIL|WARN|MISS) ' "$log" | paste -sd'|' -)"
+          ending="$(grep -E '^(Stopping:|Dry run|Sync finished|Add an Actions|script-exit=)' "$log" | paste -sd'|' -)"
+          [ -n "$keys" ] && printf '::warning title=keys-found::%s\n' "$keys"
+          [ -n "$checks" ] && printf '::warning title=validation::%s\n' "$checks"
+          [ -n "$ending" ] && printf '::warning title=ending::%s\n' "$ending"
 
       - name: Fail the run when the script failed
         if: steps.sync.outcome == 'failure'
