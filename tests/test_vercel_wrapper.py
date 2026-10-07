@@ -58,10 +58,24 @@ class VercelConfigTests(unittest.TestCase):
         with self.subTest("_handoff excluded from bundle"):
             self.assertIn("_handoff/**", function.get("excludeFiles", ""))
 
-        # The rewrite is what lets Flask own routes other than /api/*.
-        with self.subTest("rewrite targets the entry point"):
-            self.assertEqual(
-                self.config.get("rewrites", [{}])[0].get("destination"), "/api/index")
+        # No catch-all rewrite. Vercel's backend-framework routing hands the function
+        # the rewrite *destination*, so the /(.*) -> /api/index we used to ship made
+        # Flask see PATH_INFO=/api/index for every request and answer its own 404 on
+        # /, /health, /readyz and all of /api/* (observed live on cela-umber.vercel.app).
+        # The build already sends every path to the app, so the property stays absent.
+        with self.subTest("no catch-all rewrite"):
+            self.assertNotIn("rewrites", self.config)
+
+    def test_the_app_owns_the_real_paths_not_the_old_rewrite_destination(self):
+        """The whole failure in one place: the router serves the real paths and has no
+        route at ``/api/index``, which is the page every visitor saw because the
+        rewrite made Flask receive that path for every request."""
+        client = _load("api_index_client", "api/index.py").app.test_client()
+        for path in ("/", "/health", "/api/skills"):
+            with self.subTest(path):
+                self.assertEqual(client.get(path).status_code, 200)
+        with self.subTest("old rewrite destination"):
+            self.assertEqual(client.get("/api/index").status_code, 404)
 
     def test_entrypoints_expose_the_same_wsgi_app(self):
         wsgi = _load("wsgi_entrypoint", "wsgi.py")

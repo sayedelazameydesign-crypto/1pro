@@ -4,9 +4,10 @@ Used for local/other-platform serving, e.g.::
 
     gunicorn wsgi:application --bind 0.0.0.0:8000
 
-Vercel itself does not load this file: vercel.json points the single function
-at ``api/index.py``. Keeping both costs nothing and lets the same Flask app be
-started from the repository root without touching ``backend/``.
+Vercel itself does not need this file: its Flask build serves the app from the
+entrypoint it resolves (``api/index.py``) and routes every request there with its
+original path. Keeping both costs nothing and lets the same Flask app be started
+from the repository root without touching ``backend/``.
 """
 import sys
 from pathlib import Path
