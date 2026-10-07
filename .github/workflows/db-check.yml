@@ -155,15 +155,24 @@ jobs:
           # The endpoint id is public: it is in the project's Neon Auth URL.
           endpoint_id = "ep-small-meadow-b424bx1m"
           status, payload = get("/projects?limit=100")
-          if status != 200:
-              print(f"projects: HTTP {status} {str(payload.get('_body', payload))[:200]}")
-              raise SystemExit(0)
-          projects = payload.get("projects", [])
-          print(f"projects: {len(projects)} visible to this key")
-          for project in projects:
-              print(f"  - {project.get('name')}  id={project.get('id')}  "
-                    f"region={project.get('region_id')}  pg={project.get('pg_version')}")
-          ids = [p.get("id") for p in projects]
+          if status == 200:
+              projects = payload.get("projects", [])
+              print(f"projects: {len(projects)} visible to this key")
+              for project in projects:
+                  print(f"  - {project.get('name')}  id={project.get('id')}  "
+                        f"region={project.get('region_id')}  pg={project.get('pg_version')}")
+              ids = [p.get("id") for p in projects]
+          else:
+              # A project-scoped key cannot list projects, but the API names the project
+              # it is scoped to, which is exactly what is needed next.
+              body = str(payload.get("_body", ""))
+              print(f"projects: HTTP {status} (project-scoped key)")
+              ids = re.findall(r"subject_project_id:\\\\?\"([^\"]+)\\\\?\"", body) or \
+                  re.findall(r"subject_project_id:\"([^\"]+)\"", body)
+              print(f"scoped to: {ids or 'unknown'}")
+              if not ids:
+                  print(f"  raw: {body[:200]}")
+                  raise SystemExit(0)
           for project_id in ids:
               status, payload = get(f"/projects/{project_id}/endpoints")
               for endpoint in payload.get("endpoints", []):
