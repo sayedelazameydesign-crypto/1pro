@@ -6,6 +6,7 @@ through a fake Transport, which is the only reason the error paths (401, 403, 42
 happy path, because it cannot make GitHub answer 401 on demand.
 """
 import json
+import socket
 import ssl
 import sys
 import unittest
@@ -265,6 +266,36 @@ class TransportGuardTests(unittest.TestCase):
         connection.request.assert_called_once_with("POST", "/deploy?source=waha",
                                                    body=b"{}", headers={"User-Agent": "test"})
         self.assertEqual(result.status, 202)
+
+    def test_a_dead_connection_is_graded_by_when_it_failed_not_by_how_loud_it_looked(self):
+        """A failure with no HTTP response is not a verdict on the credential.
+
+        The sandbox case that motivated this: an egress filter closes the TLS
+        handshake, so the token is never sent and never answered. Every code below
+        lands in ``NETWORK_FAILURE_CODES``, which is what the live checker reads to
+        report BLOCKED -- reporting FAIL there would blame a working token for a
+        network policy, and the two have opposite fixes.
+        """
+        cases = ((ssl.SSLZeroReturnError("TLS/SSL connection has been closed (EOF)"),
+                  "egress_blocked"),
+                 (ConnectionResetError("reset by peer"), "egress_blocked"),
+                 (socket.timeout("no answer"), "upstream_timeout"),
+                 (OSError("generic transport failure"), "upstream_unreachable"))
+        for error, expected in cases:
+            with self.subTest(error=type(error).__name__), \
+                    patch("integrations.http._PinnedHTTPSConnection") as connection_type:
+                connection_type.return_value.request.side_effect = error
+                with self.assertRaises(httpmod.IntegrationError) as caught:
+                    httpmod.UrllibTransport().request(
+                        "GET", "https://hook.example.test/deploy",
+                        resolved_addresses=[PUBLIC_IP])
+                self.assertEqual(caught.exception.code, expected)
+                self.assertIn(caught.exception.code, httpmod.NETWORK_FAILURE_CODES)
+        # The inverse is the whole point of the set: an answered 401 is a credential
+        # verdict, and no status-bearing code may be excused as a network problem.
+        for code in ("ghp_unauthorized", "github_forbidden", "vercel_not_found",
+                     "github_error", "vercel_error"):
+            self.assertNotIn(code, httpmod.NETWORK_FAILURE_CODES)
 
     def test_retry_after_is_read_only_for_throttle_statuses(self):
         self.assertEqual(httpmod.retry_after_seconds(response(429, headers={"Retry-After": "30"})), 30)

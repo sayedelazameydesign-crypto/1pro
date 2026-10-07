@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from integrations import config as cfgmod          # noqa: E402
+from integrations import http as httpmod           # noqa: E402
 from integrations import redact as redactmod       # noqa: E402
 from integrations.service import IntegrationService  # noqa: E402
 import integrations_live_check as live_check       # noqa: E402
@@ -65,6 +66,38 @@ class LiveGateTests(unittest.TestCase):
         self.assertTrue(results)
         self.assertFalse(any(item.status == "PASS" for item in results),
                          "an empty run claimed a passing check")
+
+    def test_a_network_failure_is_blocked_and_never_blames_the_token(self):
+        """The checker's verdict is about the credential, so a call that died before
+        any HTTP response must not produce one. Offline on purpose: a fake transport
+        raises what the real one raises when an egress filter closes the handshake,
+        so the classification is pinned without depending on any network policy.
+        """
+        config = cfgmod.load({"GITHUB_TOKEN": "ghp_fakeToken12345",
+                              "GITHUB_REPO": "acme/widgets",
+                              "GITHUB_WORKFLOW_ID": "ci.yml",
+                              "VERCEL_TOKEN": "vercel_fakeToken",
+                              "VERCEL_PROJECT_ID": "prj_1"})
+
+        class EgressBlocked(httpmod.Transport):
+            def request(self, method, url, headers=None, body=None, timeout=15,
+                        resolved_addresses=None):
+                raise httpmod.IntegrationError("TLS/SSL connection has been closed (EOF)",
+                                               code="egress_blocked")
+
+        service = IntegrationService(config, transport=EgressBlocked())
+        redact = redactmod.build_redactor(config.secrets())
+        results = live_check.check_reads(service, redact)
+        statuses = {item.operation: item.status for item in results}
+        self.assertEqual(statuses["GET workflow runs"], "BLOCKED")
+        self.assertEqual(statuses["GET deployments"], "BLOCKED")
+        # The code has to survive into the report, or the operator reads a BLOCKED
+        # line and still cannot tell a network policy from an expired token.
+        self.assertIn("egress_blocked", live_check.render(results))
+        self.assertNotIn("FAIL", live_check.render(results))
+        # ...and the inverse: an answered 401 is a verdict and stays one.
+        self.assertFalse(live_check.network_blocked(
+            httpmod.IntegrationError("Bad credentials", code="ghp_unauthorized")))
 
     def test_the_live_layer_is_off_by_default(self):
         # If this ever fails, someone exported WAHA_LIVE_INTEGRATIONS into CI, and

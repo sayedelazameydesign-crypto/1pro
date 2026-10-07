@@ -16,6 +16,18 @@ CI run and the deploy hook triggers a real production deployment, so a check tha
 fired them by default would make "verify my tokens" a destructive command. Reads
 run whenever credentials exist; writes need the flag.
 
+A failure is graded by *when* it happened, not by how alarming it looks. An HTTP
+401 is a credential verdict and reports FAIL. A connection that dies before any
+response exists -- a TLS handshake torn down by an egress filter, a refused
+connection, a DNS failure, a timeout -- never asked the credential anything, so it
+reports BLOCKED rather than failing a working token for the network's behaviour.
+Conflating the two is how a sandbox restriction becomes a false accusation
+against a healthy credential, and the two have opposite fixes.
+
+Exit codes: 0 every attempted check passed; 1 a credential or permission check
+failed; 2 nothing reached an upstream API, so nothing was verified at all;
+3 nothing failed, but at least one check was blocked before it could ask.
+
 Secrets never reach stdout. Every message is passed through the same redactor the
 API uses, and the exit path re-scans the whole transcript before printing it.
 """
@@ -38,7 +50,17 @@ from integrations import http as httpmod           # noqa: E402
 from integrations import redact as redactmod       # noqa: E402
 from integrations.service import IntegrationService  # noqa: E402
 
-PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
+PASS, FAIL, SKIP, BLOCKED = "PASS", "FAIL", "SKIP", "BLOCKED"
+
+
+def network_blocked(error):
+    """True when the call failed *before* any HTTP response existed.
+
+    The set lives in ``integrations.http`` next to the transport that raises the
+    codes, so a new network failure cannot be added without this checker seeing
+    it. Read that name as: the credential was never judged.
+    """
+    return getattr(error, "code", "") in httpmod.NETWORK_FAILURE_CODES
 
 
 class Result:
@@ -57,14 +79,25 @@ class Result:
                + (f"  {self.detail}" if self.detail else "")
 
 
+def _failure(provider, operation, error, redact):
+    """A failed call, graded by whether any HTTP response existed.
+
+    FAIL is reserved for an upstream that actually answered: a 401, a 403 on the
+    wrong team, a 404 for a repo the token cannot see. BLOCKED means the request
+    died on the way out, so the token is neither cleared nor accused.
+    """
+    detail = f"{error.code}: {redact(error.message)}"
+    status = BLOCKED if network_blocked(error) else FAIL
+    return Result(provider, operation, status, detail)
+
+
 def check_github_read(service, redact):
     """Reads only; changes nothing upstream."""
     try:
         runs = service.github_runs()
         return Result("GitHub", "GET workflow runs", PASS, f"{runs['count']} run(s)")
     except httpmod.IntegrationError as error:
-        return Result("GitHub", "GET workflow runs", FAIL,
-                      f"{error.code}: {redact(error.message)}")
+        return _failure("GitHub", "GET workflow runs", error, redact)
 
 
 def check_vercel_read(service, redact):
@@ -74,8 +107,7 @@ def check_vercel_read(service, redact):
         return Result("Vercel", "GET deployments", PASS,
                       f"{deps['count']} deployment(s)")
     except httpmod.IntegrationError as error:
-        return Result("Vercel", "GET deployments", FAIL,
-                      f"{error.code}: {redact(error.message)}")
+        return _failure("Vercel", "GET deployments", error, redact)
 
 
 def check_reads(service, redact):
@@ -86,9 +118,9 @@ def check_reads(service, redact):
 def _dispatch(service, redact, ref):
     try:
         dispatched = service.github_dispatch(ref=ref)
-        return PASS, f"ref={dispatched['ref']}"
+        return Result("GitHub", "workflow dispatch", PASS, f"ref={dispatched['ref']}")
     except httpmod.IntegrationError as error:
-        return FAIL, f"{error.code}: {redact(error.message)}"
+        return _failure("GitHub", "workflow dispatch", error, redact)
 
 
 def _hook(service, redact):
@@ -97,14 +129,15 @@ def _hook(service, redact):
         return Result("Vercel", "deploy hook", PASS,
                       f"id={hook.get('deployment_id')}")
     except httpmod.IntegrationError as error:
-        return Result("Vercel", "deploy hook", FAIL,
-                      f"{error.code}: {redact(error.message)}")
+        # Worth being precise here: BLOCKED on this operation means no deployment
+        # was triggered, and a PASS must never be claimed for one that never left
+        # the machine.
+        return _failure("Vercel", "deploy hook", error, redact)
 
 
 def check_mutations(service, redact, ref="main"):
     """The two write operations. Only called with --allow-mutations."""
-    return [Result("GitHub", "workflow dispatch", *_dispatch(service, redact, ref)),
-            _hook(service, redact)]
+    return [_dispatch(service, redact, ref), _hook(service, redact)]
 
 
 def skip_mutations(reason="needs --allow-mutations"):
@@ -155,7 +188,7 @@ def run(config=None, service=None, allow_mutations=False, ref="main"):
     if not allow_mutations:
         results.extend(skip_mutations())
         return results
-    results.append(Result("GitHub", "workflow dispatch", *_dispatch(service, redact, ref)))
+    results.append(_dispatch(service, redact, ref))
     if "deploy hook" in skipped:
         results.append(skipped["deploy hook"])
     else:
@@ -190,6 +223,7 @@ def main(argv=None):
             text = text.replace(secret, redactmod.REDACTED)
     print(text)
     failed = [item for item in results if item.status == FAIL]
+    blocked = [item for item in results if item.status == BLOCKED]
     passed = [item for item in results if item.status == PASS]
     if not passed:
         print("\nnothing was verified: no check reached an upstream API.",
@@ -198,6 +232,15 @@ def main(argv=None):
     if failed:
         print(f"\n{len(failed)} check(s) failed.", file=sys.stderr)
         return 1
+    if blocked:
+        # Deliberately not exit 0: some of the asked-for work is unverified. And
+        # deliberately not exit 1: nothing here says a credential is bad.
+        print(f"\n{len(blocked)} check(s) BLOCKED before any HTTP response, so the "
+              "credential was never judged -- this is not a token verdict.\n"
+              "Re-run where the vendor API is reachable; a GitHub Actions runner "
+              "has open egress and this repo already passes both variables there.",
+              file=sys.stderr)
+        return 3
     print(f"\n{len(passed)} live check(s) passed.")
     return 0
 
@@ -223,12 +266,17 @@ def self_test(config):
             "WAHA_OWNER_TOKEN": "owner_fakeToken"}
 
     class FakeTransport(httpmod.Transport):
+        """Answers in order; an ``Exception`` in the list is raised instead."""
+
         def __init__(self, *answers):
             self.answers = list(answers)
 
         def request(self, method, url, headers=None, body=None, timeout=15,
                     resolved_addresses=None):
-            return self.answers.pop(0)
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
 
     def resp(status=200, payload=None):
         return httpmod.HttpResponse(status, {}, json.dumps(payload or {}).encode())
@@ -302,6 +350,50 @@ def self_test(config):
                                 allow_mutations=True)}
     failures += expect(statuses["workflow dispatch"] == PASS, "dispatch reports PASS")
     failures += expect(statuses["deploy hook"] == PASS, "deploy hook reports PASS")
+
+    # 7. A connection that dies before any response is BLOCKED, not FAIL. This is the
+    # sandbox case in miniature: an egress filter tears down the TLS handshake, no
+    # token is ever sent, and FAIL would accuse a working credential.
+    egress = httpmod.IntegrationError("TLS/SSL connection has been closed (EOF)",
+                                      code="egress_blocked")
+    results = run(config=cfgmod.load(full),
+                  service=IntegrationService(cfgmod.load(full), resolver=resolver,
+                                             transport=FakeTransport(egress, egress)))
+    statuses = {item.operation: item.status for item in results}
+    failures += expect(statuses["GET workflow runs"] == BLOCKED,
+                       "a pre-HTTP connection failure is BLOCKED, not FAIL")
+    failures += expect(statuses["GET deployments"] == BLOCKED,
+                       "a pre-HTTP connection failure is BLOCKED, not FAIL")
+    failures += expect("egress_blocked" in render(results),
+                       "the report names the network code, so egress is not read as a bad token")
+    failures += expect(not any(item.status == PASS for item in results),
+                       "a blocked run claims nothing")
+
+    # 8. Every code in the set means "no response ever existed". If the transport grows
+    # one and this checker does not, a token gets blamed for a network policy.
+    for code in sorted(httpmod.NETWORK_FAILURE_CODES):
+        failures += expect(network_blocked(httpmod.IntegrationError("no answer", code=code)),
+                           f"{code} carries no verdict about the credential")
+
+    # 9. The inverse matters as much: an answered 401 *is* a credential verdict and
+    # must not be softened into BLOCKED.
+    failures += expect(not network_blocked(
+        httpmod.IntegrationError("Bad credentials", code="ghp_unauthorized")),
+        "a 401 stays a FAIL")
+
+    # 10. Under --allow-mutations a blocked call must not report PASS either: on the
+    # deploy hook, PASS is the report's way of saying a real deployment was triggered.
+    service = IntegrationService(cfgmod.load(full), resolver=resolver,
+                                 transport=FakeTransport(resp(200, {"workflow_runs": []}),
+                                                         resp(200, {"deployments": []}),
+                                                         egress, egress))
+    statuses = {item.operation: item.status
+                for item in run(config=cfgmod.load(full), service=service,
+                                allow_mutations=True)}
+    failures += expect(statuses["workflow dispatch"] == BLOCKED,
+                       "a blocked dispatch never claims a CI run started")
+    failures += expect(statuses["deploy hook"] == BLOCKED,
+                       "a blocked deploy hook never claims a deployment was triggered")
 
     if failures:
         print(f"integrations live checker self-test: {failures} of {checks} failed",
