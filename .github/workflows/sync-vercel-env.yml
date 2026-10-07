@@ -44,29 +44,67 @@ jobs:
       - name: Install psycopg so the database URL is proven by a live query
         run: python -m pip install --quiet "psycopg[binary]~=3.2"
 
+      - name: Flag any key stored as a variable instead of a secret
+        env:
+          # Presence only: nothing here prints a value.
+          V_DATABASE_URL: ${{ vars.DATABASE_URL }}
+          V_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
+          V_WAHA_SECRET: ${{ vars.WAHA_SECRET }}
+          V_VERCEL_TOKEN: ${{ vars.VERCEL_TOKEN }}
+        run: |
+          for name in DATABASE_URL GEMINI_API_KEY WAHA_SECRET VERCEL_TOKEN; do
+            key="V_$name"
+            if [ -n "${!key:-}" ]; then
+              echo "::warning title=variable::$name is set as a repository or environment VARIABLE. This repository is public, so its variables are readable by anyone -- move $name to Actions secrets (and delete the variable)."
+            fi
+          done
+
       - name: Read GitHub secrets, push them to Vercel, verify production
         id: sync
         env:
           # Every alias is tried in order; the first non-empty one wins. `vars.*`
           # is the fallback for a key that was stored as a repository/environment
           # *variable* instead of a secret (secrets are the safer place).
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          # `secrets.X || vars.X`: a key stored as a repository/environment
+          # *variable* still works, and the step below says so out loud. Either
+          # way the value must be non-empty for the name to be reported as found.
+          DATABASE_URL: ${{ secrets.DATABASE_URL || vars.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL || vars.NEON_DATABASE_URL }}
           DATABASE_PRIVATE_URL: ${{ secrets.DATABASE_PRIVATE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          POSTGRES_PRISMA_URL: ${{ secrets.POSTGRES_PRISMA_URL }}
+          POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
+          NEON_POSTGRES_URL: ${{ secrets.NEON_POSTGRES_URL }}
+          NEON_URL: ${{ secrets.NEON_URL }}
+          NEON_CONNECTION_STRING: ${{ secrets.NEON_CONNECTION_STRING }}
+          DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
+          WAHA_DATABASE_URL: ${{ secrets.WAHA_DATABASE_URL }}
+          POSTGRESQL_URL: ${{ secrets.POSTGRESQL_URL }}
+          DB_URL: ${{ secrets.DB_URL }}
+          NEON_DSN: ${{ secrets.NEON_DSN }}
+          CONNECTION_STRING: ${{ secrets.CONNECTION_STRING }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || vars.GEMINI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
-          WAHA_SECRET: ${{ secrets.WAHA_SECRET }}
+          GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
+          GEMINI_TOKEN: ${{ secrets.GEMINI_TOKEN }}
+          GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+          WAHA_SECRET: ${{ secrets.WAHA_SECRET || vars.WAHA_SECRET }}
           WAHA_APP_SECRET: ${{ secrets.WAHA_APP_SECRET }}
-          WAHA_ALLOWED_ORIGINS: ${{ secrets.WAHA_ALLOWED_ORIGINS }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          FLASK_SECRET: ${{ secrets.FLASK_SECRET }}
+          WAHA_CSRF_SECRET: ${{ secrets.WAHA_CSRF_SECRET }}
+          WAHA_ALLOWED_ORIGINS: ${{ secrets.WAHA_ALLOWED_ORIGINS || vars.WAHA_ALLOWED_ORIGINS }}
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          WAHA_ORIGINS: ${{ secrets.WAHA_ORIGINS }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN || vars.VERCEL_TOKEN }}
           VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          VERCEL_PROJECT_NAME: ${{ secrets.VERCEL_PROJECT_NAME || vars.VERCEL_PROJECT_NAME }}
-          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          VERCEL_TEAM_SLUG: ${{ secrets.VERCEL_TEAM_SLUG || vars.VERCEL_TEAM_SLUG }}
+          VERCEL_ACCESS_TOKEN: ${{ secrets.VERCEL_ACCESS_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
+          VERCEL_PROJECT_NAME: ${{ vars.VERCEL_PROJECT_NAME }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID || vars.VERCEL_TEAM_ID }}
+          VERCEL_TEAM_SLUG: ${{ vars.VERCEL_TEAM_SLUG }}
           GITHUB_REPO_ID: ${{ github.event.repository.id }}
         run: |
           set -uo pipefail
