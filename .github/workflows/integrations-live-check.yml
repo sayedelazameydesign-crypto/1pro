@@ -93,46 +93,73 @@ jobs:
           printf '::warning title=credential-names::%s\n' "$(paste -sd'|' /tmp/names.txt)"
 
       # The token is the credential under test, so its *validity and scope* are
-      # proven before it is handed to the checker: GET /v9/projects answers 200
-      # with the projects this token can see (wrong team -> 403, bad token -> 401),
-      # and the id it returns is exactly the value VERCEL_PROJECT_ID wants. Only
-      # names and ids are ever printed; never the token.
-      - name: Ask Vercel which projects this token can see
+      # established before it is handed to the checker. A wrong-team token, or one
+      # minted without project read, answers 403 here -- and that is precisely the
+      # failure no mocked test can see. Each probe prints the status code and
+      # Vercel's own error code; the token itself is never printed.
+      #
+      # /v2/user is scope-free: it proves the token exists at all, so a later 403
+      # can be attributed to scope rather than to a dead credential.
+      - name: Probe the Vercel token's validity and scope
         id: discover
         run: |
           set -uo pipefail
+          : > /tmp/discover.txt
           if [ -z "${VERCEL_TOKEN:-}" ]; then
-            printf 'VERCEL_PROJECTS_HTTP=skip (no VERCEL_TOKEN)\n' > /tmp/discover.txt
-            echo "VERCEL_TOKEN is not set; discovery skipped"
+            printf 'VERCEL_TOKEN absent: nothing to probe\n' >> /tmp/discover.txt
+            echo "VERCEL_TOKEN is not set; probing skipped"
             exit 0
           fi
-          query="limit=20"
+
+          q() { python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$1"; }
+
+          probe() { # label url -- GET only, prints status + Vercel's error code
+            local label="$1" url="$2" code summary
+            code="$(curl -sS -o /tmp/probe.json -w '%{http_code}' --max-time 30 \
+                      -H "Authorization: Bearer $VERCEL_TOKEN" "$url" || echo 000)"
+            summary="$(jq -r '
+              [ (if (.error|type) == "object" then (.error.message // .error.code)
+                 elif .error then (.error|tostring) else empty end),
+                (if .user.username then "user=" + .user.username else empty end),
+                (if (.teams|type) == "array" then "teams=" + ([.teams[]? | (.slug//"?") + "=" + .id] | join(",")) else empty end),
+                (if (.projects|type) == "array" then "projects=" + ([.projects[]? | .name] | join(",")) else empty end),
+                (if (.deployments|type) == "array" then "deployments=" + ([.deployments[]? | .name] | unique | join(",")) else empty end)
+              ] | map(select(. != null and . != "")) | join(" ")' /tmp/probe.json 2>/dev/null)"
+            printf '%-34s http=%s %s\n' "$label" "$code" "${summary:-}"
+            printf '%s http=%s %s|' "$label" "$code" "$summary" >> /tmp/discover.txt
+          }
+
+          { printf 'team-config=%s\n' "${VERCEL_TEAM_ID:-(unset)}"; } >> /tmp/discover.txt
+          probe "GET /v2/user" "https://api.vercel.com/v2/user"
+          probe "GET /v2/teams" "https://api.vercel.com/v2/teams?limit=20"
+          probe "GET /v9/projects (no team)" "https://api.vercel.com/v9/projects?limit=20"
           if [ -n "${VERCEL_TEAM_ID:-}" ]; then
-            query="$query&teamId=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$VERCEL_TEAM_ID")"
+            probe "GET /v9/projects?teamId" "https://api.vercel.com/v9/projects?limit=20&teamId=$(q "$VERCEL_TEAM_ID")"
+            probe "GET /v9/projects?slug" "https://api.vercel.com/v9/projects?limit=20&slug=$(q "$VERCEL_TEAM_ID")"
           fi
+          probe "GET /v6/deployments (no team)" "https://api.vercel.com/v6/deployments?limit=3"
+          if [ -n "${VERCEL_TEAM_ID:-}" ]; then
+            probe "GET /v6/deployments?teamId" "https://api.vercel.com/v6/deployments?limit=3&teamId=$(q "$VERCEL_TEAM_ID")"
+          fi
+
+          # Adopt an id only from the same scope the checker will query, so a PASS
+          # cannot come from a project the configured team does not contain.
           code="$(curl -sS -o /tmp/projects.json -w '%{http_code}' --max-time 30 \
                     -H "Authorization: Bearer $VERCEL_TOKEN" \
-                    "https://api.vercel.com/v9/projects?$query" || echo 000)"
-          err="$(jq -r '.error.message // .error.code // empty' /tmp/projects.json 2>/dev/null)"
-          listed="$(jq -r '.projects[]? | "\(.name) (id=\(.id))"' /tmp/projects.json 2>/dev/null | paste -sd', ' -)"
-          printf 'http=%s projects=%s error=%s\n' "$code" "${listed:-(none)}" "${err:-none}"
-          {
-            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code"
-            printf 'VERCEL_PROJECTS_LIST=%s\n' "${listed:-(none)}"
-          } >> /tmp/discover.txt
-          # Prefer the project the sync script defaults to ("cela"), else the only
-          # one, else the first. Never overwrite a value the operator already set.
-          chosen="$(jq -r '[.projects[]?.id] | (map(select(. != null))) | .[0] // empty' /tmp/projects.json 2>/dev/null)"
-          named="$(jq -r '.projects[]? | select(.name == "cela" or .name == "1pro" or .name == "cela-umber") | .id' /tmp/projects.json 2>/dev/null | head -1)"
-          [ -n "$named" ] && chosen="$named"
+                    "https://api.vercel.com/v9/projects?limit=20${VERCEL_TEAM_ID:+&teamId=$(q "$VERCEL_TEAM_ID")}" || echo 000)"
+          chosen="$(jq -r '.projects[]? | select(.name == "cela" or .name == "cela-umber" or .name == "1pro") | .id' /tmp/projects.json 2>/dev/null | head -1)"
+          [ -n "$chosen" ] || chosen="$(jq -r '.projects[0]?.id // empty' /tmp/projects.json 2>/dev/null)"
           if [ -n "${VERCEL_PROJECT_ID:-}" ]; then
             printf 'VERCEL_PROJECT_ID already set; discovery is informational only\n'
           elif [ -n "$chosen" ]; then
             printf 'VERCEL_PROJECT_ID=%s\n' "$chosen" >> "$GITHUB_ENV"
-            printf 'adopted project id from discovery\n' 
+            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code" >> /tmp/discover.txt
+            printf 'adopted project id from the configured scope (http=%s)\n' "$code"
           else
-            printf 'no project id discoverable; the checker will report it as missing\n'
+            printf 'VERCEL_PROJECTS_HTTP=%s\n' "$code" >> /tmp/discover.txt
+            printf 'no project id in the configured scope; Vercel read will report it missing\n'
           fi
+
 
       # Proves the checker before trusting its verdict, exactly as CI does.
       - name: Self-test the checker offline first
