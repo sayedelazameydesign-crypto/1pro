@@ -6,9 +6,11 @@ name: Database check (read-only, temporary)
 # there. A runner can read the secret and reach Neon.
 #
 # Read-only against the database: SELECT 1, version(), current_database(), a table count.
-# No writes anywhere, no Vercel, no deployment. The value itself is never printed --
-# only facts derived from it (scheme, pooled/direct, sslmode, presence). Error text is
-# passed through a username:password masker before it reaches the log.
+# No writes anywhere, no Vercel, no deployment.
+#
+# The value itself is never printed. What is printed is derived structure only: lengths,
+# presence booleans, and a skeleton in which every alphanumeric becomes `a` and the
+# user:password part is already replaced by ***. Error text is masked the same way.
 #
 # Delete this file once the answer is known: it is not part of the product.
 on:
@@ -37,72 +39,95 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --quiet "psycopg[binary]~=3.2"
 
-      - name: Shape of the stored value, without printing it
+      - name: Structure of the stored value, never the value
         run: |
           set -uo pipefail
-          {
-            if [ -z "${DSN:-}" ]; then
-              echo "MISSING: no DATABASE_URL secret is visible in this job"
-            else
-              case "$DSN" in
-                postgres://*|postgresql://*) echo "scheme=ok (postgresql://)";;
-                https://*) echo "scheme=WRONG: this is a Data API https URL, not a connection string";;
-                *) echo "scheme=WRONG: must start with postgresql://";;
-              esac
-              case "$DSN" in
-                *-pooler*) echo "endpoint=pooled (-pooler present, right for the app)";;
-                *) echo "endpoint=direct (no -pooler: fine for migrations, but the app wants the pooled URL)";;
-              esac
-              case "$DSN" in *sslmode=*) echo "sslmode=explicit";; *) echo "sslmode=absent (the sync script appends require)";; esac
-              case "$DSN" in
-                *channel_binding=require*) echo "channel_binding=present (psycopg may reject it: drop it)";;
-                *) echo "channel_binding=absent (good)";;
-              esac
-              case "$DSN" in *neon.tech*) echo "host=*neon.tech";; *) echo "host=NOT neon.tech (wrong database?)";; esac
-              echo "value length=${#DSN} characters"
-            fi
-            if [ -z "${SESSION_SECRET:-}" ]; then
-              echo "WAHA_SECRET: MISSING (sessions drop on every container recycle)"
-            else
-              echo "WAHA_SECRET: present, length=${#SESSION_SECRET} (needs >= 16)"
-            fi
-          } | tee /tmp/shape.txt
+          python3 - <<'PY' 2>&1 | tee /tmp/shape.txt
+          import os
+          import re
 
-      - name: Live query (SELECT 1, version, database name, table count)
+          value = os.environ.get("DSN", "")
+          if not value:
+              print("MISSING: no DATABASE_URL secret is visible in this job")
+              raise SystemExit(0)
+
+          print(f"length = {len(value)}")
+          print(f"leading whitespace  = {value != value.lstrip()}")
+          print(f"trailing whitespace = {value != value.rstrip()}")
+          print(f"contains newline/tab = {any(c in value for c in chr(10) + chr(13) + chr(9))}")
+          print(f"wrapped in double quotes = {len(value) >= 2 and value[0] == chr(34) and value[-1] == chr(34)}")
+          print(f"wrapped in single quotes = {len(value) >= 2 and value[0] == chr(39) and value[-1] == chr(39)}")
+          for token in ("postgres://", "postgresql://", "DATABASE_URL=", "sslmode=", "-pooler",
+                        "neon", "https://", "@", "?", "=", " ", "[", "]"):
+              print(f"contains {token!r} = {token in value}")
+          print(f"only [A-Za-z0-9_-] = {bool(re.fullmatch(r'[A-Za-z0-9_-]+', value))}")
+
+          masked = re.sub(r"://[^@/\s]*@", "://***@", value)
+          skeleton = re.sub(r"[A-Za-z0-9]", "a", masked)
+          print(f"skeleton = {skeleton[:120]}")
+          PY
+
+      - name: Presence of the session secret
+        run: |
+          set -uo pipefail
+          if [ -z "${SESSION_SECRET:-}" ]; then
+            echo "WAHA_SECRET: MISSING (sessions drop on every container recycle)" | tee /tmp/session.txt
+          else
+            echo "WAHA_SECRET: present, length=${#SESSION_SECRET} (needs >= 16)" | tee /tmp/session.txt
+          fi
+
+      - name: Live query, raw then trimmed
         run: |
           set -uo pipefail
           python3 - <<'PY' 2>&1 | tee /tmp/live.txt
           import os
           import re
-          import sys
           import time
 
           import psycopg
 
+
           def masked(text):
               return re.sub(r"://[^@/\s]*@", "://***@", str(text))
 
-          dsn = os.environ.get("DSN", "")
-          if not dsn:
+
+          def with_sslmode(dsn):
+              if "sslmode=" in dsn:
+                  return dsn
+              return dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
+
+
+          def cleaned(dsn):
+              text = dsn.strip()
+              if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+                  text = text[1:-1]
+              return text
+
+
+          def attempt(label, dsn):
+              started = time.time()
+              try:
+                  with psycopg.connect(dsn, connect_timeout=20) as db:
+                      one = db.execute("SELECT 1").fetchone()[0]
+                      name = db.execute("SELECT current_database()").fetchone()[0]
+                      server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
+                      tables = db.execute(
+                          "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+                      ).fetchone()[0]
+                  print(f"{label}: PASS SELECT 1 = {one} in {time.time() - started:.1f}s, "
+                        f"database = {name!r}, server = {server}, public tables = {tables}")
+              except Exception as error:
+                  print(f"{label}: FAIL {type(error).__name__}: {masked(error)}")
+
+
+          raw = os.environ.get("DSN", "")
+          if not raw:
               print("MISSING: nothing to connect to")
-              sys.exit(0)
-          if "sslmode=" not in dsn:
-              dsn = dsn + ("&" if "?" in dsn else "?") + "sslmode=require"
-          started = time.time()
-          try:
-              with psycopg.connect(dsn, connect_timeout=20) as db:
-                  one = db.execute("SELECT 1").fetchone()[0]
-                  name = db.execute("SELECT current_database()").fetchone()[0]
-                  server = db.execute("SELECT version()").fetchone()[0].split(",")[0]
-                  tables = db.execute(
-                      "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
-                  ).fetchone()[0]
-              print(f"PASS: SELECT 1 = {one} in {time.time() - started:.1f}s")
-              print(f"database = {name!r}")
-              print(f"server = {server}")
-              print(f"public tables = {tables}")
-          except Exception as error:
-              print(f"FAIL: {type(error).__name__}: {masked(error)}")
+              raise SystemExit(0)
+          attempt("as stored", with_sslmode(raw))
+          tidy = cleaned(raw)
+          if tidy != raw:
+              attempt("after trimming whitespace/quotes", with_sslmode(tidy))
           PY
 
       - name: Publish the findings as annotations, the channel readable remotely
@@ -112,8 +137,9 @@ jobs:
           emit() {
             local name="$1" file="/tmp/$1.txt" text
             [ -f "$file" ] || text="(step produced no file)"
-            text="$(tr '\n' '|' < "$file" | head -c 900)"
+            text="$(tr '\n' '|' < "$file" | head -c 1200)"
             printf '::warning title=dbcheck-%s::%s\n' "$1" "${text:-"(empty)"}"
           }
           emit shape
+          emit session
           emit live
