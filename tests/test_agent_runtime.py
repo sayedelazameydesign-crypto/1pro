@@ -638,6 +638,26 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json()["decision"], "denied")
 
+    def test_artifact_versions(self):
+        task_id = backend.agent_store.create_task(self.user, "مهمة ملفات تجريبية", "gemini", "model", time.time() + 60)
+        art_id = backend.agent_store.put_artifact(task_id, self.user, "test.html", "html", "<h1>v1</h1>")
+        art_id2 = backend.agent_store.put_artifact(task_id, self.user, "test.html", "html", "<h1>v2</h1>")
+        self.assertEqual(art_id, art_id2)
+
+        resp = self.client.get(f"/api/agent/artifacts/{art_id}", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        art = resp.get_json()["artifact"]
+        self.assertEqual(art["version"], 2)
+        self.assertEqual(art["content"], "<h1>v2</h1>")
+        self.assertEqual(art["parent_version"], 1)
+
+        resp = self.client.get(f"/api/agent/artifacts/{art_id}/versions", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        versions = resp.get_json()["versions"]
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(versions[0]["version"], 2)
+        self.assertEqual(versions[1]["version"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
