@@ -2,12 +2,16 @@
 
 Design rules, all enforced here rather than in the prompt:
 
-* No shell, no filesystem writes, no environment reads. Code execution exists
-  only through `agent/sandbox.py` (R7): off unless the operator opts in, gated by
-  a per-task approval, and refused outright when the machine cannot build the
-  boundary. It is never "a subprocess with a timeout" -- the guarantees are
-  declared and checked, and the one it cannot give (filesystem isolation) is
-  reported on every result instead of assumed.
+* No shell string, no free-form file tools, no environment reads. The one tool
+  that executes anything or writes anywhere is `code_exec`, and it does so only
+  through `agent/sandbox.py` (R7): off unless the operator opts in, gated by a
+  per-task approval, and refused outright unless the machine can build the *whole*
+  boundary -- user/mount/PID/network namespaces, a private filesystem root whose
+  only writable paths are `/workspace` and `/tmp`, and the resource ceilings. It is
+  never "a subprocess with a timeout": every guarantee is declared, enforced, and
+  falsified by a test that tries to break it -- the host-write test checks the host
+  afterwards rather than trusting the program's own report. (File tools with their
+  own policy come in R7.4; until then this sentence names exactly one writer.)
 * Anything that leaves the server (web_fetch) is capability-gated by the
   operator AND requires a human approval per task unless the operator opted into
   auto-approval for read-only tools.
@@ -327,17 +331,17 @@ def _code_exec(ctx, args):
     compiled:
 
     * the runner must be able to enforce every guarantee in
-      `sandbox.REQUIRED_CAPABILITIES` (network denial, environment allowlist,
-      timeout, output cap, memory and CPU ceilings) -- otherwise the call is
-      refused, and no code runs;
-    * the program is refused before execution if it exceeds the input cap;
-    * the filesystem is *not* isolated, and the result says `filesystem_isolated:
-      false` rather than leaving that to be inferred.
+      `sandbox.REQUIRED_CAPABILITIES` -- network denial, environment allowlist,
+      timeout, output cap, memory, CPU, process and file-size ceilings, a private
+      filesystem root and a PID namespace. A host that can build only part of that
+      gets a refusal and no execution. There is no knob that lowers the boundary,
+      because the tool's description promises the whole thing;
+    * the program is refused before execution if it exceeds the input cap.
 
-    A program that fails is data, not an exception: the exit status, both
-    streams and the truncation flag travel back in the observation, which the
-    runtime persists. A refused call raises `ToolError`, which the loop already
-    turns into an observation as well -- so no failure here can kill a task.
+    A program that fails is data, not an exception: the exit status, both streams
+    and the truncation flag travel back in the observation, which the runtime
+    persists. A refused call raises `ToolError`, which the loop already turns into
+    an observation as well -- so no failure here can kill a task.
     """
     code = args.get("code") or ""
     config = ctx.config
@@ -354,15 +358,21 @@ def _code_exec(ctx, args):
         cpu_seconds=config.CODE_EXEC_CPU_SECONDS,
         max_output_bytes=config.CODE_EXEC_MAX_OUTPUT_BYTES,
         max_input_bytes=config.MAX_TOOL_INPUT_CHARS * 2,
+        max_processes=config.CODE_EXEC_MAX_PROCESSES,
     )
     try:
         outcome = runner.run(sandbox.RunRequest(code=code, limits=limits))
     except sandbox.SandboxRefused as refusal:
         raise ToolError(f"لم يُنفَّذ الكود: {refusal.message}") from refusal
     observation = outcome.as_observation()
-    observation["note"] = ("لا يُعزل نظام الملفات: الكود قد يقرأ ملفات الخادم؛ "
-                           "وهو مرفوض لهذا السبب." if not outcome.filesystem_isolated
-                           else "الملفات معزولة أيضًا.")
+    # The workspace is the sandbox's writable directory, and it is `/workspace`
+    # because the mount is what makes a host path unreachable -- a program that
+    # wants to leave something behind writes there and the caller keeps it.
+    observation["note"] = (
+        "عُزل نظام الملفات: المسار الوحيد القابل للكتابة هو /workspace (و/tmp)، "
+        "ولا يرى البرنامج ملفات الخادم. سقف الذاكرة للعملية الواحدة "
+        f"{limits.memory_mb}MB × {limits.max_processes} عمليات = "
+        f"{outcome.aggregate_memory_bound_mb}MB كأسوأ حالة (لا cgroup على هذا الخادم).")
     return observation
 
 
@@ -574,10 +584,12 @@ def build_registry():
               "content": {"type": "string", "required": True, "description": "محتوى الملف"}},
              _artifact_write, requires_approval=False, read_only=False),
         Tool("code_exec",
-             "شغّل برنامج بايثون قصيراً داخل حدود عزل (شبكة مقطوعة، بيئة منظّفة، حدود "
-             "زمن وذاكرة وإخراج) وأعد حالة الخروج والمخرجات. نظام الملفات غير معزول.",
+             "شغّل برنامج بايثون قصيراً داخل حدود عزل: شبكة مقطوعة، وجذر ملفات خاص "
+             "لا يرى ملفات الخادم، والكتابة مسموحة في /workspace وحده، مع حدود زمن "
+             "وذاكرة ومعالج وإخراج. أعد حالة الخروج والمخرجات.",
              {"code": {"type": "string", "required": True,
-                       "description": "برنامج بايثون كامل؛ اطبع النتيجة لتقرأها"}},
+                       "description": "برنامج بايثون كامل؛ اطبع النتيجة لتقرأها، "
+                                      "واكتب ما تريد حفظه في /workspace"}},
              _code_exec, requires_approval=True, read_only=False, network=False,
              gated="CODE_EXEC"),
         Tool("web_fetch", "اجلب نص صفحة ويب عامة عبر GET مع حراسة ضد العناوين الداخلية.",

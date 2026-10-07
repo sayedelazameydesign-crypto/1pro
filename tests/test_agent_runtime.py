@@ -254,8 +254,22 @@ class AgentCase(unittest.TestCase):
         code_exec = patch.object(backend.AgentConfig, "CODE_EXEC", True)
         code_exec.start()
         self.addCleanup(code_exec.stop)
+        # The program the loop runs does two things: it answers, and it tries to
+        # write into the project directory. The second half is the point -- the
+        # host is checked afterwards, so a result that *says* the filesystem was
+        # isolated while the file lands on disk cannot pass.
+        victim = ROOT / "PWNED-BY-THE-LOOP.txt"
+        program = ("import os\n"
+                   "victim = %r\n"
+                   "print('answer', 6 * 7)\n"
+                   "print('host-visible', os.path.exists(victim))\n"
+                   "try:\n"
+                   "    open(victim, 'w').write('pwned')\n"
+                   "    print('HOST-WRITE-SUCCEEDED')\n"
+                   "except OSError as error:\n"
+                   "    print('host-write-blocked', type(error).__name__)\n" % str(victim))
         self.use_script([plan(["احسب بـبايثون"]),
-                         action("code_exec", code="print(6 * 7)"),
+                         action("code_exec", code=program),
                          final("نفّذت الحساب"), final("تقرير")])
         task_id = self.create().get_json()["task"]["id"]
         waiting = None
@@ -278,10 +292,18 @@ class AgentCase(unittest.TestCase):
         call = task["calls"][0]
         if sandbox_module.detect().supports():
             self.assertEqual(call["status"], "done", call.get("error"))
-            self.assertEqual(call["result"]["exit_status"], 0)
-            self.assertIn("42", call["result"]["stdout"])
-            self.assertFalse(call["result"]["filesystem_isolated"],
-                             "the result must carry the guarantee it does not have")
+            result = call["result"]
+            self.assertEqual(result["exit_status"], 0)
+            self.assertIn("42", result["stdout"])
+            self.assertTrue(result["filesystem_isolated"],
+                            "the boundary reports the guarantee the runner enforced")
+            self.assertEqual(result["isolation"], sandbox_module.ISOLATION_PRIVATE_ROOT)
+            # Behavioural, not declarative: the write was attempted through the
+            # loop and the project directory is unchanged.
+            self.assertIn("host-visible False", result["stdout"])
+            self.assertIn("host-write-blocked", result["stdout"])
+            self.assertNotIn("HOST-WRITE-SUCCEEDED", result["stdout"])
+            self.assertFalse(victim.exists(), "code executed by the loop wrote into the repository")
         else:
             self.assertEqual(call["status"], "error")
             self.assertIn("عزل", call["error"])

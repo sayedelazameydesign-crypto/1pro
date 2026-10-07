@@ -69,15 +69,24 @@ class AgentConfig:
     AUTO_APPROVE_READ_ONLY = _bool("AGENT_AUTO_APPROVE_READ_ONLY", False)
 
     # Sandboxed code execution. Off unless the operator opts in *and* the machine
-    # can build a boundary; `sandbox.detect()` decides the second half at run
-    # time and refuses rather than running unguarded. These are requested
-    # ceilings -- the runner enforces them or refuses the call, so a value here
-    # never becomes a limit that only looks like one.
+    # can build the whole boundary; `sandbox.detect()` decides the second half and
+    # the tool refuses rather than running against a partial one. These are
+    # requested ceilings -- the runner enforces them or refuses the call, so a
+    # value here never becomes a limit that only looks like one.
+    #
+    # There is deliberately no knob that lowers the boundary: a weaker sandbox
+    # would make the tool's own description ("the program cannot touch the
+    # application's files") untrue. The numbers below are the *bounds*, and the
+    # worst case they imply is reported on every run.
     CODE_EXEC = _bool("AGENT_CODE_EXEC", False)
     CODE_EXEC_TIMEOUT_SECONDS = _int("AGENT_CODE_EXEC_TIMEOUT_SECONDS", 15, 1, 120)
-    CODE_EXEC_MEMORY_MB = _int("AGENT_CODE_EXEC_MEMORY_MB", 256, 64, 2048)
+    CODE_EXEC_MEMORY_MB = _int("AGENT_CODE_EXEC_MEMORY_MB", 128, 32, 2048)
     CODE_EXEC_CPU_SECONDS = _int("AGENT_CODE_EXEC_CPU_SECONDS", 10, 1, 120)
     CODE_EXEC_MAX_OUTPUT_BYTES = _int("AGENT_CODE_EXEC_MAX_OUTPUT_BYTES", 4000, 500, 40000)
+    # Per-process memory is not a tree total: this is the other factor. 4 × 128MB is
+    # the worst case on the target 512MB instance, and a real aggregate cap would
+    # need cgroup v2, which the boundary does not claim.
+    CODE_EXEC_MAX_PROCESSES = _int("AGENT_CODE_EXEC_MAX_PROCESSES", 4, 1, 32)
 
     # Model override for the agent path only; empty means "use the chat model".
     MODEL = os.environ.get("AGENT_MODEL", "").strip()
@@ -100,7 +109,11 @@ class AgentConfig:
             "code_exec_limits": {"timeout_seconds": cls.CODE_EXEC_TIMEOUT_SECONDS,
                                  "memory_mb": cls.CODE_EXEC_MEMORY_MB,
                                  "cpu_seconds": cls.CODE_EXEC_CPU_SECONDS,
-                                 "max_output_bytes": cls.CODE_EXEC_MAX_OUTPUT_BYTES},
+                                 "max_output_bytes": cls.CODE_EXEC_MAX_OUTPUT_BYTES,
+                                 "max_processes": cls.CODE_EXEC_MAX_PROCESSES,
+                                 # The honest total, not the per-process number.
+                                 "aggregate_memory_bound_mb": (cls.CODE_EXEC_MEMORY_MB
+                                                               * cls.CODE_EXEC_MAX_PROCESSES)},
             "model": cls.MODEL or None,
             "artifact_max_bytes": cls.MAX_ARTIFACT_BYTES,
             # Never promised: the free tier is shared and can be throttled.
