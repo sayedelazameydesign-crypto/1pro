@@ -290,6 +290,11 @@ def _kb_search(ctx, args):
                    "chunks": payload["index"]["chunks"]},
     }
     notes = []
+    # The applied cap is data, not something a reader has to recover from the note.
+    # `evidence_truncated` below is the same idea for the context budget: a caller
+    # (and a test) can see what happened without matching a sentence.
+    out["applied_k"] = limit
+    out["k_clamped"] = clamped
     if clamped:
         out["requested_k"] = requested_k
         notes.append(f"قُصّ `k` إلى سقف الأداة {MAX_KB_RESULTS}.")

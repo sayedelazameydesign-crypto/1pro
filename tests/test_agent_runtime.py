@@ -171,8 +171,16 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(result["no_answer"]["decision"], "deferred")
         self.assertNotIn("answer", result)
         # The observation reached the next model turn verbatim, with its citation.
-        turns = [json.dumps(item["messages"], ensure_ascii=False) for item in self.fake.calls]
-        self.assertTrue(any("نتيجة الأداة" in turn and citation in turn for turn in turns),
+        # Asserted by the citation and by the observation's own key -- the data and
+        # the shape it travelled in -- not by the label the loop prints in front of it.
+        # What the model must receive, read from the message content itself: the
+        # citation, and the observation's own key. (Through `json.dumps` the inner
+        # quotes arrive escaped, so a dump is the wrong thing to search -- and the
+        # label the loop prints in front of the observation is copy, not contract.)
+        contents = [message.get("content", "") for item in self.fake.calls
+                    for message in item["messages"]
+                    if isinstance(message.get("content"), str)]
+        self.assertTrue(any(citation in text and '"results"' in text for text in contents),
                         "the tool result must be fed back to the model, not swallowed")
         self.assertIn(citation, task["report"])
 
@@ -198,9 +206,19 @@ class AgentCase(unittest.TestCase):
         # missing" is the stub's own text, not our copy): a summarised cause is how
         # an operator loses the one detail that identifies the failure.
         self.assertIn("index.json", call["error"])
-        turns = [json.dumps(item["messages"], ensure_ascii=False) for item in self.fake.calls]
-        self.assertTrue(any("مكتبة المعرفة غير متاحة" in turn for turn in turns),
-                        "the model must be told the library was unavailable")
+        # What the model must receive is a failure it can act on: the observation's
+        # `error` field, carrying the cause the retrieval layer relayed ("index.json",
+        # the stub's own text). Matching the Arabic message instead would break the day
+        # the message is reworded -- which is a language edit, not a regression.
+        # What the model must receive is a failure it can act on: the observation's
+        # `error` field carrying the cause the retrieval layer relayed ("index.json",
+        # the stub's own text). Matching the Arabic message instead would break the
+        # day it is reworded -- a language edit, not a regression.
+        contents = [message.get("content", "") for item in self.fake.calls
+                    for message in item["messages"]
+                    if isinstance(message.get("content"), str)]
+        self.assertTrue(any('"error"' in text and "index.json" in text for text in contents),
+                        "the model must be told the tool failed, with its cause")
 
     def test_tool_results_are_persisted_as_events(self):
         self.use_script([plan(["اضبط تاريخاً"]), action("clock", offset_days=1),

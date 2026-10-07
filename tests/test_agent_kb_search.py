@@ -277,7 +277,10 @@ class Budgets(unittest.TestCase):
             out = call("بريد", k=900)
         self.assertEqual(probe.call_args.kwargs["k"], MAX_KB_RESULTS)
         self.assertEqual(out["requested_k"], 900)
-        self.assertIn(f"سقف الأداة {MAX_KB_RESULTS}", out["note"])
+        # What was applied is a field, so the test asserts the cap as data: the note
+        # beside it is copy, and copy is allowed to change.
+        self.assertEqual(out["applied_k"], MAX_KB_RESULTS)
+        self.assertTrue(out["k_clamped"], "the result must record that it clamped `k`")
         for bad in (0, -1, True, "many"):
             with self.assertRaises(ToolError, msg=f"k={bad!r} must be rejected"):
                 call("بريد", k=bad)

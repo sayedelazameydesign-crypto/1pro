@@ -37,6 +37,9 @@ ROW = re.compile(r"^\|\s*(C\d{2})\s*\|(.+?)\|(.+?)\|(.+?)\|"
                  r"\s*(Implemented|Partial|Missing|Mocked)\s*\|(.+?)\|\s*(P0|P1|P2)\s*\|\s*$",
                  re.M)
 TOKEN = re.compile(r"`([a-z]+):([^`]+)`")
+# An evidence cell that cites something, whatever it is rendered with: a Missing row
+# must match none of these tags, while how a row says "nothing" is a formatting choice.
+EVIDENCE_TAG = re.compile(r"\b(?:file|tool|route|table|knob):")
 TOTAL = re.compile(r"الإجمالي:\s*(\d+)\s*قدرة\s*—(.+)")
 
 
@@ -129,8 +132,14 @@ class EvidenceResolves(unittest.TestCase):
                 self.assertFalse(row["tokens"],
                                  f"{row['id']} is Missing yet cites evidence; absence is not "
                                  "provable from a path -- mark it Partial and cite what exists")
-                self.assertIn(row["evidence"], ("—", "-", ""),
-                              "a Missing row carries prose where evidence would go")
+                # What matters is that the cell cites nothing, so that is what is
+                # asserted. The previous version matched the dash a Missing row is
+                # rendered with -- punctuation, not behaviour: it would have broken on
+                # a formatting change that meant nothing, on the same principle that
+                # keeps this suite from asserting on sentences.
+                self.assertFalse(EVIDENCE_TAG.search(row["evidence"]),
+                                 f"{row['id']} is Missing yet its evidence cell cites "
+                                 f"{row['evidence']!r}")
 
 
 class TheMatrixCoversTheTools(unittest.TestCase):
