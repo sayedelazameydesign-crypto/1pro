@@ -135,9 +135,25 @@ jobs:
           probe "GET /v9/projects (personal scope)"       "https://api.vercel.com/v9/projects?limit=20"       /tmp/p_projects_personal.json
           probe "GET /v6/deployments (personal scope)"    "https://api.vercel.com/v6/deployments?limit=3"     /tmp/p_deployments_personal.json
 
+          # Shape only, never the value: length, prefix, and whether it equals the slug
+          # already visible in /v2/teams. That is enough to tell a slug from a stale id
+          # -- the difference between "the operator typed the name Vercel shows them"
+          # and "the operator pasted something else" -- without printing the value.
+          if [ -n "${VERCEL_TEAM_ID:-}" ]; then
+            shape="len=${#VERCEL_TEAM_ID}"
+            case "$VERCEL_TEAM_ID" in team_*) shape="$shape prefix=team_" ;; *) shape="$shape prefix=none" ;; esac
+            team_slug="$(jq -r '.teams[]?.slug' /tmp/p_teams.json 2>/dev/null | head -1)"
+            if [ -n "$team_slug" ] && [ "$VERCEL_TEAM_ID" = "$team_slug" ]; then
+              shape="$shape equals-visible-team-slug=yes"
+            else
+              shape="$shape equals-visible-team-slug=no"
+            fi
+            note "stored VERCEL_TEAM_ID shape: $shape"
+          fi
+
           # The canonical id of the team the token *can* see, taken from /v2/teams.
-          # If the configured value 403s and this one 403s too, the configured value
-          # was never the problem -- the token's scope is.
+          # This is the control: it is provably correct, so if it answers 200 while the
+          # configured value answers 403, the configured value is the defect.
           canon="$(jq -r '.teams[]?.id' /tmp/p_teams.json 2>/dev/null | head -1)"
           if [ -n "$canon" ]; then
             probe "GET /v9/projects (canonical team)"     "https://api.vercel.com/v9/projects?limit=20&teamId=$(q "$canon")" /tmp/p_projects_canon.json
