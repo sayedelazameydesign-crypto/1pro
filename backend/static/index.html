@@ -18,6 +18,7 @@
       <button class="nav-item active" data-view="discover"><span data-icon="compass"></span>اكتشف المهارات<span class="nav-count">06</span></button>
       <button class="nav-item" data-view="library"><span data-icon="book"></span>مكتبتي</button>
       <button class="nav-item" data-view="chats"><span data-icon="message"></span>محادثاتي</button>
+      <button class="nav-item" data-view="assistant"><span data-icon="spark"></span>مساعدك الذكي</button>
     </nav>
     <div class="side-note"><span class="tiny-label">خطوة واحدة كل يوم</span><div class="little-orbit" aria-hidden="true"><span data-icon="spark"></span></div><p>التعلّم يبدأ بسؤال.<br>خلّي فضولك يقودك.</p><span class="small-rule"></span><small>عينات عربية · تجربة MVP</small></div>
     <div class="sidebar-bottom">
@@ -46,6 +47,22 @@
         <div class="section-heading chats-heading"><div><div class="eyebrow small">مساحة للعودة إلى أفكارك</div><h1>محادثاتي</h1><p>تُحفظ تلقائياً. اختر محادثة لتكمل من حيث توقفت.</p></div></div>
         <div class="chats-grid" id="chats-list"></div>
       </section>
+      <section id="assistant-view" class="hidden">
+        <div class="section-heading chats-heading"><div><div class="eyebrow small">اسأل، اكتب، خطّط، وتعلّم</div><h1>محادثة مع مساعدك الذكي</h1><p>محادثة عامة داخل واحة. المساعد لا يصل إلى جهازك أو ملفاتك ولا ينفّذ إجراءات نيابةً عنك.</p></div></div>
+        <div class="assistant-start-card">
+          <div class="assistant-start-copy"><span class="skill-icon mint"> <span data-icon="spark"></span></span><div><strong>ابدأ محادثة جديدة</strong><p>اختر الموفّر ثم اكتب أي سؤال. تحفظ المحادثة في حسابك.</p></div></div>
+          <div class="assistant-controls">
+            <label class="assistant-provider-label" for="assistant-provider-choice">الموفّر</label>
+            <select id="assistant-provider-choice" aria-label="موفّر المساعد الذكي"><option value="gemini">Gemini</option><option value="nvidia">NVIDIA — Nemotron</option></select>
+            <button id="start-assistant-chat" class="primary" type="button" disabled>محادثة جديدة<span data-icon="arrow"></span></button>
+          </div>
+        </div>
+        <div id="assistant-nvidia-notice" class="identity-banner hidden"><span data-icon="shield"></span><p>يرسل سؤالك إلى NVIDIA باستخدام اتصالك الشخصي. سقف التطبيق 100 محاولة خلال 24 ساعة و10 في الدقيقة؛ راجع شروط الخدمة، ولا ترسل بيانات حساسة.</p><label class="free-confirm"><input id="assistant-free-confirm" type="checkbox"><span>راجعت أهلية نقطة NVIDIA وشروطها وحدود حسابي، وأوافق على الإرسال.</span></label></div>
+        <div id="assistant-error" class="inline-error hidden" role="alert"></div>
+        <div class="section-heading assistant-history-heading"><div><div class="eyebrow small">مساحة للعودة إلى أفكارك</div><h2>محادثات المساعد</h2></div></div>
+        <div class="chats-grid" id="assistant-chats-list" aria-live="polite"></div>
+        <p class="ai-disclaimer">تُرسل رسائلك وسياق المحادثة إلى الموفّر المختار لإنشاء الرد. قد تخطئ الإجابات؛ لا تشارك كلمات مرور أو مفاتيح API.</p>
+      </section>
       <section id="conversation-view" class="hidden">
         <div class="conversation-header"><button id="chat-back" class="secondary"><span data-icon="arrow"></span>رجوع</button><div><h2 id="conversation-title"></h2><p id="conversation-mode"></p></div><div class="chat-tools"><button id="export-chat" class="icon-button" aria-label="تحميل المحادثة JSON"><span data-icon="download"></span></button><button id="delete-chat" class="icon-button danger" aria-label="حذف المحادثة"><span data-icon="trash"></span></button></div></div>
         <div class="messages" id="messages" aria-live="polite"></div>
@@ -64,7 +81,7 @@
 <p>يرسل سؤالك إلى NVIDIA باستخدام اتصالك الشخصي. سقف التطبيق كله: 100 محاولة خلال 24 ساعة و10/دقيقة. ليست ضماناً لحصة مجانية أو جودة الإجابة.</p>
 <label class="free-confirm"><input id="free-confirm" type="checkbox"><span>راجعت أهلية نقطة NVIDIA المجانية وشروطها وحدود حسابي. لن أرسل بيانات حساسة.</span></label>
 </div></div><h3 class="mode-title">كيف تحب تبدأ؟</h3><div class="mode-options"><label><input type="radio" name="mode" value="guided" checked><span data-icon="book"></span><strong>شرح موجه</strong><small>فكرة، مثال، وخطوات</small></label><label><input type="radio" name="mode" value="exercise"><span data-icon="pen"></span><strong>تمرين</strong><small>جرّب بنفسك</small></label><label><input type="radio" name="mode" value="quiz"><span data-icon="spark"></span><strong>اختبار</strong><small>اختبر فهمك</small></label></div><div id="dialog-error" class="inline-error hidden" role="alert"></div><button id="start-session" class="primary full">ابدأ جلسة تعلّم<span data-icon="arrow"></span></button><p class="dialog-footnote">يُنشئ محادثة محفوظة ويضيف المهارة إلى مكتبتك. لا يبدأ طلب AI حتى ترسل رسالتك.</p></dialog>
-<dialog id="help-dialog"><div class="dialog-header"><h2>أهلاً بك في واحة</h2><button class="icon-button close-dialog" aria-label="إغلاق"><span data-icon="close"></span></button></div><ol class="help-steps"><li><strong>اكتشف مهارة</strong><p>ابحث أو فلتر حسب الفئة والمستوى. المهارات الست عينات للتجربة.</p></li><li><strong>اختر طريقة تعلّم</strong><p>شرح، تمرين، أو اختبار. اختر Gemini أو NVIDIA ثم أرسل سؤالك. لكل جلسة موفّر ثابت، ولا يوجد انتقال تلقائي.</p></li><li><strong>ارجع وقت ما تحب</strong><p>مكتبتك ومحادثاتك محفوظة بحسابك. تستطيع تنزيل ملف JSON أو حذف محادثة.</p></li></ol><div class="help-notice">تطبيق مستقل عن صفحة مراجعة الوثيقة؛ لا يقرأ Google Docs ولا يعدّلها. لا يشغّل الكود أو يحمّل إضافات تنفيذية. تنزيل المهارة يعني تنزيل بياناتها وقالب توجيهها فقط.</div><button class="primary full close-dialog">جاهز، لنبدأ</button></dialog>
+<dialog id="help-dialog"><div class="dialog-header"><h2>أهلاً بك في واحة</h2><button class="icon-button close-dialog" aria-label="إغلاق"><span data-icon="close"></span></button></div><ol class="help-steps"><li><strong>اكتشف مهارة</strong><p>ابحث أو فلتر حسب الفئة والمستوى. المهارات الست عينات للتجربة.</p></li><li><strong>اختر طريقة تعلّم</strong><p>شرح، تمرين، أو اختبار. اختر Gemini أو NVIDIA ثم أرسل سؤالك. لكل جلسة موفّر ثابت، ولا يوجد انتقال تلقائي.</p></li><li><strong>اسأل مساعدك الذكي</strong><p>ابدأ محادثة عامة من القائمة الجانبية. المساعد لا يصل إلى جهازك أو ملفاتك ولا ينفّذ إجراءات.</p></li><li><strong>ارجع وقت ما تحب</strong><p>مكتبتك ومحادثاتك محفوظة بحسابك. تستطيع تنزيل ملف JSON أو حذف محادثة.</p></li></ol><div class="help-notice">تطبيق مستقل عن صفحة مراجعة الوثيقة؛ لا يقرأ Google Docs ولا يعدّلها. لا يشغّل الكود أو يحمّل إضافات تنفيذية. تنزيل المهارة يعني تنزيل بياناتها وقالب توجيهها فقط.</div><button class="primary full close-dialog">جاهز، لنبدأ</button></dialog>
 <div class="toast hidden" id="toast" role="status"></div>
 </body>
 </html>

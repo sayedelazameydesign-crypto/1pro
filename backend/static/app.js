@@ -30,8 +30,8 @@ function icon(name){return `<svg class="icon" width="20" height="20" viewBox="0 
 function injectIcons(){document.querySelectorAll('[data-icon]').forEach(el => el.innerHTML=icon(el.dataset.icon));}
 function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 const providerLabel=key=>key==='nvidia'?'NVIDIA':'Gemini';
-const modes={guided:'شرح موجه',exercise:'تمرين تطبيقي',quiz:'اختبار'};
-const state={me:null,skills:[],sessions:[],view:'discover',selected:null,current:null,busy:false};
+const modes={guided:'شرح موجه',exercise:'تمرين تطبيقي',quiz:'اختبار',chat:'محادثة عامة'};
+const state={me:null,skills:[],sessions:[],view:'discover',selected:null,current:null,busy:false,returnView:'chats'};
 let toastTimer;
 function toast(text){$('toast').textContent=text;$('toast').classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hidden'),3500);}
 function showError(id,error){$(id).textContent=error.message||String(error);$(id).classList.remove('hidden');}
@@ -53,16 +53,18 @@ function setTheme(theme){
 function switchView(view){
  if(state.busy){toast('انتظر انتهاء الرد أولاً.');return;}
  state.view=view;
- $('discovery-view').classList.toggle('hidden',view==='chats'||view==='conversation');
+ $('discovery-view').classList.toggle('hidden',view==='chats'||view==='assistant'||view==='conversation');
  $('chats-view').classList.toggle('hidden',view!=='chats');
+ $('assistant-view').classList.toggle('hidden',view!=='assistant');
  $('conversation-view').classList.toggle('hidden',view!=='conversation');
  $('discovery-view').classList.toggle('library',view==='library');
  document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.view===view));
- $('breadcrumb-title').textContent=({discover:'اكتشف المهارات',library:'مكتبتي',chats:'محادثاتي',conversation:'جلسة تعلّم'})[view];
+ $('breadcrumb-title').textContent=({discover:'اكتشف المهارات',library:'مكتبتي',chats:'محادثاتي',assistant:'مساعدك الذكي',conversation:'المحادثة'})[view];
  $('catalog-title').textContent=view==='library'?'مهاراتك، في مكان واحد':'اختر مهارتك التالية';
  $('catalog-kicker').textContent=view==='library'?'جاهزة لسؤالك التالي':'ابدأ بشيء يثير فضولك';
  if(view==='discover'||view==='library')renderSkills();
  if(view==='chats')renderChats();
+ if(view==='assistant')renderAssistantChats();
  window.scrollTo({top:0,behavior:'smooth'});
 }
 function renderSkills(){
@@ -76,11 +78,19 @@ function renderSkills(){
  $('skill-grid').innerHTML=filtered.map(s=>`<article class="skill-card"><div class="card-top"><div class="skill-icon ${escapeHtml(s.color)}">${icon(s.icon)}</div><span class="badge ${s.installed?'installed-tag':''}">${s.installed?'في مكتبتك':'مهارة تجريبية'}</span></div><h3>${escapeHtml(s.name)}</h3><p>${escapeHtml(s.description)}</p><div class="skill-meta"><span>${escapeHtml(s.category)}</span><span class="dot"></span><span>${escapeHtml(s.difficulty)}</span><span class="dot"></span><span>تعلّم تفاعلي</span></div><div class="card-footer"><button class="card-action" data-skill="${s.id}">استكشف المهارة${icon('arrow')}</button><button class="icon-button" data-download="${s.id}" aria-label="تنزيل ${escapeHtml(s.name)} JSON">${icon('download')}</button></div></article>`).join('');
 }
 function renderChats(){
- if(!state.sessions.length){$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${state.me?.authenticated?'ابدأ جلسة مع أي مهارة، وستجدها هنا لاحقاً.':'افتح التطبيق من PromptQL لحفظ محادثاتك.'}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
+ if(!state.sessions.length){$('chats-list').innerHTML=`<div class="empty-state">${icon('message')}<h3>كل محادثة بداية جديدة</h3><p>${state.me?.authenticated?'ابدأ جلسة مع مهارة أو افتح المساعد الذكي.':'افتح التطبيق من PromptQL لحفظ محادثاتك.'}</p><button class="secondary" id="chats-explore">اكتشف المهارات</button></div>`;return;}
  $('chats-list').innerHTML=state.sessions.map(s=>{
   const skill=state.skills.find(k=>k.id===s.skill_id);
-  return `<button class="chat-card" data-session="${s.id}"><div class="skill-icon ${skill?.color||'mint'}">${icon(skill?.icon||'message')}</div><div class="chat-details"><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.skill_name)} · ${modes[s.mode]} · ${providerLabel(s.provider)}</p></div><time>${new Date(s.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`;
+  return `<button class="chat-card" data-session="${s.id}"><div class="skill-icon ${skill?.color||'mint'}">${icon(skill?.icon||(s.skill_id==='assistant'?'spark':'message'))}</div><div class="chat-details"><h3>${escapeHtml(s.title)}</h3><p>${escapeHtml(s.skill_name)} · ${modes[s.mode]||'محادثة'} · ${providerLabel(s.provider)}</p></div><time>${new Date(s.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`;
  }).join('');
+}
+function renderAssistantChats(){
+ const sessions=state.sessions.filter(session=>session.skill_id==='assistant');
+ if(!sessions.length){
+  $('assistant-chats-list').innerHTML=`<div class="empty-state">${icon('spark')}<h3>ابدأ أول محادثة</h3><p>${state.me?.authenticated?'ستظهر محادثاتك المحفوظة هنا. اكتب سؤالك بأي موضوع.':'افتح التطبيق من PromptQL لتفعيل المحادثات وحفظها.'}</p></div>`;
+  return;
+ }
+ $('assistant-chats-list').innerHTML=sessions.map(session=>`<button class="chat-card" data-session="${session.id}"><div class="skill-icon mint">${icon('spark')}</div><div class="chat-details"><h3>${escapeHtml(session.title)}</h3><p>مساعدك الذكي · ${providerLabel(session.provider)}</p></div><time>${new Date(session.updated_at*1000).toLocaleDateString('ar-EG',{month:'short',day:'numeric'})}</time>${icon('arrow')}</button>`).join('');
 }
 async function refresh(){
  const [skills,sessions]=await Promise.all([api('/api/skills'),api('/api/sessions')]);
@@ -88,7 +98,7 @@ async function refresh(){
  $('skill-count').textContent=state.skills.length;
  $('installed-count').textContent=sessions.installed_count;
  $('chat-count').textContent=state.sessions.length;
- renderSkills();renderChats();
+ renderSkills();renderChats();renderAssistantChats();
 }
 function openSkill(id){
  if(state.busy)return;
@@ -110,6 +120,7 @@ async function openSession(id){
  try{
   const result=await api('/api/sessions/'+id);
   state.current=result.session;
+  state.returnView=state.current.skill_id==='assistant'?'assistant':'chats';
   renderConversation();
   switchView('conversation');
   $('message-input').value='';
@@ -120,13 +131,16 @@ function renderConversation(streamLast){
  // Any full render invalidates an in-flight stream: a tick may only write into
  // the bubble this exact render produced, never into a newer one.
  answerSeq++;
- const session=state.current,skill=state.skills.find(s=>s.id===session.skill_id);
+ const session=state.current,skill=state.skills.find(s=>s.id===session.skill_id),assistant=session.skill_id==='assistant';
  $('conversation-title').textContent=skill?.name||session.skill_name;
- $('conversation-mode').textContent=modes[session.mode]+' · '+providerLabel(session.provider)+' · محادثة خاصة محفوظة';
- $('composer-provider').textContent=providerLabel(session.provider)+' · حفظ تلقائي · 30 طلباً / ساعة';
+ $('conversation-mode').textContent=(modes[session.mode]||'محادثة')+' · '+providerLabel(session.provider)+' · محادثة خاصة محفوظة';
+ $('composer-provider').textContent=(assistant?'مساعدك الذكي · ':'')+providerLabel(session.provider)+' · حفظ تلقائي · 30 طلباً / ساعة';
  $('ai-disclaimer').textContent='يُرسل سؤالك وسياق هذه الجلسة فقط إلى '+providerLabel(session.provider)+' لإنشاء الرد. راجع الإجابات؛ لا يوجد تحويل تلقائي.';
  if(!session.messages.length){
-  $('messages').innerHTML=`<div class="chat-welcome">${icon('spark')}<h3>ابدأ بسؤال، واترك الباقي لفضولك.</h3><p>مساعدك جاهز للتعلّم معك بطريقة ${modes[session.mode]}.</p><button class="starter-prompt" id="starter-prompt">${escapeHtml(skill?.starter||'ساعدني أتعلم هذه المهارة.')}</button></div>`;
+  const welcome=assistant?'اسأل مساعدك الذكي عن أي شيء.':'ابدأ بسؤال، واترك الباقي لفضولك.';
+  const hint=assistant?'محادثة عامة للكتابة والتخطيط والتعلّم. لا يصل المساعد إلى جهازك أو ملفاتك.':'مساعدك جاهز للتعلّم معك بطريقة '+(modes[session.mode]||'محادثة عامة')+'.';
+  const starter=skill?.starter||(assistant?'كيف يمكنني مساعدتك اليوم؟':'ساعدني أتعلم هذه المهارة.');
+  $('messages').innerHTML=`<div class="chat-welcome">${icon('spark')}<h3>${welcome}</h3><p>${hint}</p><button class="starter-prompt" id="starter-prompt">${escapeHtml(starter)}</button></div>`;
  }else{
   const messages=session.messages;
   $('messages').innerHTML=messages.map((m,i)=>{
@@ -243,6 +257,7 @@ $('explore-button').addEventListener('click',()=>$('catalog').scrollIntoView({be
 ['search','category','difficulty'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',renderSkills));
 $('skill-grid').addEventListener('click',e=>{const open=e.target.closest('[data-skill]'),download=e.target.closest('[data-download]');if(open)openSkill(open.dataset.skill);if(download)window.location.href='/api/skills/'+download.dataset.download+'/download';});
 $('chats-list').addEventListener('click',e=>{const button=e.target.closest('[data-session]');if(button)openSession(button.dataset.session);if(e.target.closest('#chats-explore'))switchView('discover');});
+$('assistant-chats-list').addEventListener('click',e=>{const button=e.target.closest('[data-session]');if(button)openSession(button.dataset.session);});
 $('download-skill').addEventListener('click',()=>{if(state.selected)window.location.href='/api/skills/'+state.selected.id+'/download';});
 $('install-skill').addEventListener('click',async()=>{
  if(!authenticated()||!state.selected)return;
@@ -257,6 +272,27 @@ function updateProviderChoice(){
 }
 $('provider-choice').addEventListener('change',updateProviderChoice);
 $('free-confirm').addEventListener('change',updateProviderChoice);
+function updateAssistantProvider(){
+ const nvidia=$('assistant-provider-choice').value==='nvidia';
+ $('assistant-nvidia-notice').classList.toggle('hidden',!nvidia);
+ $('start-assistant-chat').disabled=!state.me?.authenticated||(nvidia&&!$('assistant-free-confirm').checked);
+}
+$('assistant-provider-choice').addEventListener('change',updateAssistantProvider);
+$('assistant-free-confirm').addEventListener('change',updateAssistantProvider);
+$('start-assistant-chat').addEventListener('click',async()=>{
+ if(!authenticated()||state.busy)return;
+ $('assistant-error').classList.add('hidden');
+ $('start-assistant-chat').disabled=true;
+ try{
+  const provider=$('assistant-provider-choice').value;
+  const result=await api('/api/sessions',{skill_id:'assistant',mode:'chat',provider,
+    free_endpoint_confirmed:$('assistant-free-confirm').checked});
+  $('assistant-free-confirm').checked=false;
+  await refresh();
+  await openSession(result.session.id);
+ }catch(error){showError('assistant-error',error);}
+ finally{updateAssistantProvider();}
+});
 
 $('start-session').addEventListener('click',async()=>{
  if(!authenticated()||!state.selected)return;
@@ -267,14 +303,14 @@ $('start-session').addEventListener('click',async()=>{
  }catch(error){showError('dialog-error',error);}
  finally{updateProviderChoice();}
 });
-$('chat-back').addEventListener('click',()=>switchView('chats'));
+$('chat-back').addEventListener('click',()=>switchView(state.returnView||'chats'));
 $('export-chat').addEventListener('click',()=>{if(state.current)window.location.href='/api/sessions/'+state.current.id+'/export';});
 $('delete-chat').addEventListener('click',async()=>{
  if(!state.current||state.busy)return;
  if(!confirm('حذف هذه المحادثة نهائياً؟ لا يمكن استرجاعها.'))return;
- try{await api('/api/sessions/'+state.current.id+'/delete',{});state.current=null;await refresh();switchView('chats');toast('تم حذف المحادثة');}catch(error){toast(error.message);}
+ try{await api('/api/sessions/'+state.current.id+'/delete',{});state.current=null;await refresh();switchView(state.returnView||'chats');toast('تم حذف المحادثة');}catch(error){toast(error.message);}
 });
-$('messages').addEventListener('click',e=>{if(e.target.closest('#starter-prompt')){$('message-input').value=state.skills.find(s=>s.id===state.current.skill_id).starter;$('message-input').focus();}});
+$('messages').addEventListener('click',e=>{if(e.target.closest('#starter-prompt')){$('message-input').value=state.skills.find(s=>s.id===state.current.skill_id)?.starter||'كيف يمكنني مساعدتك اليوم؟';$('message-input').focus();}});
 $('message-form').addEventListener('submit',sendMessage);
 $('message-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('message-form').requestSubmit();}});
 async function init(){
@@ -283,6 +319,7 @@ async function init(){
  try{
   state.me=await api('/api/me');
   $('identity-banner').classList.toggle('hidden',state.me.authenticated);
+  updateAssistantProvider();
   if(state.me.authenticated){
    $('user-name').textContent=state.me.user.name;
    $('user-avatar').textContent=state.me.user.name[0];

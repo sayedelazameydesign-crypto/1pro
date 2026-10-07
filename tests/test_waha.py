@@ -127,9 +127,36 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(session["messages"], [])
 
     def test_invalid_mode(self):
-        response = self.client.post("/api/sessions", json={"skill_id": "SKL002",
-            "mode": "execute_untrusted_code"}, headers=self.a)
-        self.assertEqual(response.status_code, 400)
+        for mode in ("execute_untrusted_code", "chat"):
+            response = self.client.post("/api/sessions", json={"skill_id": "SKL002",
+                "mode": mode}, headers=self.a)
+            self.assertEqual(response.status_code, 400)
+
+    def test_general_assistant_chat_is_saved_and_uses_general_instructions(self):
+        response = self.client.post("/api/sessions", json={"skill_id": "assistant"},
+                                    headers=self.a)
+        self.assertEqual(response.status_code, 201, response.get_json())
+        session = response.get_json()["session"]
+        self.assertEqual(session["skill_name"], "مساعدك الذكي")
+        self.assertEqual(session["mode"], "chat")
+        self.assertEqual(session["messages"], [])
+        self.assertEqual([s["id"] for s in self.client.get(
+            "/api/skills", headers=self.a).get_json()["skills"]].count("assistant"), 0)
+        with patch.object(backend, "generate_reply", return_value="مرحباً! أنا جاهز للمساعدة.") as generate:
+            result = self.client.post(f"/api/sessions/{session['id']}/message",
+                json={"text": "ساعدني في ترتيب يومي"}, headers=self.a)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(generate.call_args.args[1]["id"], "assistant")
+        self.assertEqual(generate.call_args.args[2], "chat")
+        self.assertIn("لا تدّع الوصول إلى جهاز المستخدم",
+                      backend.learning_instructions(backend.ASSISTANT_SKILL, "chat"))
+        saved = self.client.get(f"/api/sessions/{session['id']}",
+                                headers=self.a).get_json()["session"]
+        self.assertEqual([m["role"] for m in saved["messages"]], ["user", "assistant"])
+        with backend.connect() as db:
+            installs = backend.run(db, "SELECT COUNT(1) AS n FROM installs WHERE user_id=?",
+                                   ("reviewer-a",)).fetchone()["n"]
+        self.assertEqual(installs, 0)
 
     def test_download_valid(self):
         response = self.client.get("/api/skills/SKL002/download")
