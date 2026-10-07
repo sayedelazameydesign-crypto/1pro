@@ -149,3 +149,175 @@ jobs:
         run: |
           echo "The sync script reported a failure; see the report above."
           exit 1
+
+  diagnose:
+    # Read-only: reports which candidate NAMES exist (secret or variable), never a
+    # value. Temporary -- it exists to discover what the operator actually named the
+    # keys, so the sync job above can find them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Production
+    steps:
+      - name: Which key names exist in the repository and the Production environment
+        env:
+          S_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          V_DATABASE_URL: ${{ vars.DATABASE_URL }}
+          S_DATABASE_URL_POOLED: ${{ secrets.DATABASE_URL_POOLED }}
+          V_DATABASE_URL_POOLED: ${{ vars.DATABASE_URL_POOLED }}
+          S_NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          V_NEON_DATABASE_URL: ${{ vars.NEON_DATABASE_URL }}
+          S_NEON_URL: ${{ secrets.NEON_URL }}
+          V_NEON_URL: ${{ vars.NEON_URL }}
+          S_NEON_DB_URL: ${{ secrets.NEON_DB_URL }}
+          V_NEON_DB_URL: ${{ vars.NEON_DB_URL }}
+          S_NEON: ${{ secrets.NEON }}
+          V_NEON: ${{ vars.NEON }}
+          S_POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          V_POSTGRES_URL: ${{ vars.POSTGRES_URL }}
+          S_POSTGRESQL_URL: ${{ secrets.POSTGRESQL_URL }}
+          V_POSTGRESQL_URL: ${{ vars.POSTGRESQL_URL }}
+          S_POSTGRES_PRIVATE_URL: ${{ secrets.POSTGRES_PRIVATE_URL }}
+          V_POSTGRES_PRIVATE_URL: ${{ vars.POSTGRES_PRIVATE_URL }}
+          S_DATABASE_PRIVATE_URL: ${{ secrets.DATABASE_PRIVATE_URL }}
+          V_DATABASE_PRIVATE_URL: ${{ vars.DATABASE_PRIVATE_URL }}
+          S_DB_URL: ${{ secrets.DB_URL }}
+          V_DB_URL: ${{ vars.DB_URL }}
+          S_DSN: ${{ secrets.DSN }}
+          V_DSN: ${{ vars.DSN }}
+          S_CONNECTION_STRING: ${{ secrets.CONNECTION_STRING }}
+          V_CONNECTION_STRING: ${{ vars.CONNECTION_STRING }}
+          S_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          V_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
+          S_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          V_GOOGLE_API_KEY: ${{ vars.GOOGLE_API_KEY }}
+          S_GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          V_GEMINI_KEY: ${{ vars.GEMINI_KEY }}
+          S_GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+          V_GOOGLE_GENAI_API_KEY: ${{ vars.GOOGLE_GENAI_API_KEY }}
+          S_GOOGLE_AI_STUDIO_API_KEY: ${{ secrets.GOOGLE_AI_STUDIO_API_KEY }}
+          V_GOOGLE_AI_STUDIO_API_KEY: ${{ vars.GOOGLE_AI_STUDIO_API_KEY }}
+          S_GEMINI: ${{ secrets.GEMINI }}
+          V_GEMINI: ${{ vars.GEMINI }}
+          S_WAHA_SECRET: ${{ secrets.WAHA_SECRET }}
+          V_WAHA_SECRET: ${{ vars.WAHA_SECRET }}
+          S_APP_SECRET: ${{ secrets.APP_SECRET }}
+          V_APP_SECRET: ${{ vars.APP_SECRET }}
+          S_WAHA_ALLOWED_ORIGINS: ${{ secrets.WAHA_ALLOWED_ORIGINS }}
+          V_WAHA_ALLOWED_ORIGINS: ${{ vars.WAHA_ALLOWED_ORIGINS }}
+          S_ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
+          V_ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          S_VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          V_VERCEL_TOKEN: ${{ vars.VERCEL_TOKEN }}
+          S_VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
+          V_VERCEL_API_TOKEN: ${{ vars.VERCEL_API_TOKEN }}
+          S_API_KEY: ${{ secrets.API_KEY }}
+          V_API_KEY: ${{ vars.API_KEY }}
+          S_SECRET: ${{ secrets.SECRET }}
+          V_SECRET: ${{ vars.SECRET }}
+          S_TOKEN: ${{ secrets.TOKEN }}
+          V_TOKEN: ${{ vars.TOKEN }}
+          S_PASSWORD: ${{ secrets.PASSWORD }}
+          V_PASSWORD: ${{ vars.PASSWORD }}
+          S_DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          V_DATABASE_PASSWORD: ${{ vars.DATABASE_PASSWORD }}
+          S_database_url: ${{ secrets.database_url }}
+          V_database_url: ${{ vars.database_url }}
+          S_gemini_api_key: ${{ secrets.gemini_api_key }}
+          V_gemini_api_key: ${{ vars.gemini_api_key }}
+          S_waha_secret: ${{ secrets.waha_secret }}
+          V_waha_secret: ${{ vars.waha_secret }}
+          S_vercel_token: ${{ secrets.vercel_token }}
+          V_vercel_token: ${{ vars.vercel_token }}
+        run: |
+          found=""
+          for name in DATABASE_URL DATABASE_URL_POOLED NEON_DATABASE_URL NEON_URL NEON_DB_URL NEON POSTGRES_URL POSTGRESQL_URL POSTGRES_PRIVATE_URL DATABASE_PRIVATE_URL DB_URL DSN CONNECTION_STRING GEMINI_API_KEY GOOGLE_API_KEY GEMINI_KEY GOOGLE_GENAI_API_KEY GOOGLE_AI_STUDIO_API_KEY GEMINI WAHA_SECRET APP_SECRET WAHA_ALLOWED_ORIGINS ALLOWED_ORIGINS VERCEL_TOKEN VERCEL_API_TOKEN API_KEY SECRET TOKEN PASSWORD DATABASE_PASSWORD database_url gemini_api_key waha_secret vercel_token; do
+            s="S_$name"; v="V_$name"
+            if [ -n "${!s}" ]; then found="$found $name(secret)"; fi
+            if [ -n "${!v}" ]; then found="$found $name(variable)"; fi
+          done
+          echo "::warning title=names-found::$(printf '%s' "${found:-none of the candidate names are set in the repo or Production scope}")"
+
+  diagnose-preview:
+    # The other environment the operator might have used.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: Preview
+    steps:
+      - name: Which key names exist in the Preview environment
+        env:
+          S_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          V_DATABASE_URL: ${{ vars.DATABASE_URL }}
+          S_DATABASE_URL_POOLED: ${{ secrets.DATABASE_URL_POOLED }}
+          V_DATABASE_URL_POOLED: ${{ vars.DATABASE_URL_POOLED }}
+          S_NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          V_NEON_DATABASE_URL: ${{ vars.NEON_DATABASE_URL }}
+          S_NEON_URL: ${{ secrets.NEON_URL }}
+          V_NEON_URL: ${{ vars.NEON_URL }}
+          S_NEON_DB_URL: ${{ secrets.NEON_DB_URL }}
+          V_NEON_DB_URL: ${{ vars.NEON_DB_URL }}
+          S_NEON: ${{ secrets.NEON }}
+          V_NEON: ${{ vars.NEON }}
+          S_POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          V_POSTGRES_URL: ${{ vars.POSTGRES_URL }}
+          S_POSTGRESQL_URL: ${{ secrets.POSTGRESQL_URL }}
+          V_POSTGRESQL_URL: ${{ vars.POSTGRESQL_URL }}
+          S_POSTGRES_PRIVATE_URL: ${{ secrets.POSTGRES_PRIVATE_URL }}
+          V_POSTGRES_PRIVATE_URL: ${{ vars.POSTGRES_PRIVATE_URL }}
+          S_DATABASE_PRIVATE_URL: ${{ secrets.DATABASE_PRIVATE_URL }}
+          V_DATABASE_PRIVATE_URL: ${{ vars.DATABASE_PRIVATE_URL }}
+          S_DB_URL: ${{ secrets.DB_URL }}
+          V_DB_URL: ${{ vars.DB_URL }}
+          S_DSN: ${{ secrets.DSN }}
+          V_DSN: ${{ vars.DSN }}
+          S_CONNECTION_STRING: ${{ secrets.CONNECTION_STRING }}
+          V_CONNECTION_STRING: ${{ vars.CONNECTION_STRING }}
+          S_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          V_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
+          S_GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          V_GOOGLE_API_KEY: ${{ vars.GOOGLE_API_KEY }}
+          S_GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          V_GEMINI_KEY: ${{ vars.GEMINI_KEY }}
+          S_GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
+          V_GOOGLE_GENAI_API_KEY: ${{ vars.GOOGLE_GENAI_API_KEY }}
+          S_GOOGLE_AI_STUDIO_API_KEY: ${{ secrets.GOOGLE_AI_STUDIO_API_KEY }}
+          V_GOOGLE_AI_STUDIO_API_KEY: ${{ vars.GOOGLE_AI_STUDIO_API_KEY }}
+          S_GEMINI: ${{ secrets.GEMINI }}
+          V_GEMINI: ${{ vars.GEMINI }}
+          S_WAHA_SECRET: ${{ secrets.WAHA_SECRET }}
+          V_WAHA_SECRET: ${{ vars.WAHA_SECRET }}
+          S_APP_SECRET: ${{ secrets.APP_SECRET }}
+          V_APP_SECRET: ${{ vars.APP_SECRET }}
+          S_WAHA_ALLOWED_ORIGINS: ${{ secrets.WAHA_ALLOWED_ORIGINS }}
+          V_WAHA_ALLOWED_ORIGINS: ${{ vars.WAHA_ALLOWED_ORIGINS }}
+          S_ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
+          V_ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          S_VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          V_VERCEL_TOKEN: ${{ vars.VERCEL_TOKEN }}
+          S_VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
+          V_VERCEL_API_TOKEN: ${{ vars.VERCEL_API_TOKEN }}
+          S_API_KEY: ${{ secrets.API_KEY }}
+          V_API_KEY: ${{ vars.API_KEY }}
+          S_SECRET: ${{ secrets.SECRET }}
+          V_SECRET: ${{ vars.SECRET }}
+          S_TOKEN: ${{ secrets.TOKEN }}
+          V_TOKEN: ${{ vars.TOKEN }}
+          S_PASSWORD: ${{ secrets.PASSWORD }}
+          V_PASSWORD: ${{ vars.PASSWORD }}
+          S_DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          V_DATABASE_PASSWORD: ${{ vars.DATABASE_PASSWORD }}
+          S_database_url: ${{ secrets.database_url }}
+          V_database_url: ${{ vars.database_url }}
+          S_gemini_api_key: ${{ secrets.gemini_api_key }}
+          V_gemini_api_key: ${{ vars.gemini_api_key }}
+          S_waha_secret: ${{ secrets.waha_secret }}
+          V_waha_secret: ${{ vars.waha_secret }}
+          S_vercel_token: ${{ secrets.vercel_token }}
+          V_vercel_token: ${{ vars.vercel_token }}
+        run: |
+          found=""
+          for name in DATABASE_URL DATABASE_URL_POOLED NEON_DATABASE_URL NEON_URL NEON_DB_URL NEON POSTGRES_URL POSTGRESQL_URL POSTGRES_PRIVATE_URL DATABASE_PRIVATE_URL DB_URL DSN CONNECTION_STRING GEMINI_API_KEY GOOGLE_API_KEY GEMINI_KEY GOOGLE_GENAI_API_KEY GOOGLE_AI_STUDIO_API_KEY GEMINI WAHA_SECRET APP_SECRET WAHA_ALLOWED_ORIGINS ALLOWED_ORIGINS VERCEL_TOKEN VERCEL_API_TOKEN API_KEY SECRET TOKEN PASSWORD DATABASE_PASSWORD database_url gemini_api_key waha_secret vercel_token; do
+            s="S_$name"; v="V_$name"
+            if [ -n "${!s}" ]; then found="$found $name(secret)"; fi
+            if [ -n "${!v}" ]; then found="$found $name(variable)"; fi
+          done
+          echo "::warning title=names-found-preview::$(printf '%s' "${found:-none}")"
