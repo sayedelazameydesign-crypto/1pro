@@ -94,12 +94,24 @@ jobs:
           # A wrong password proves the host, the database and the role all exist:
           # Postgres answers "password authentication failed for user ..." only after
           # it has resolved all three. Nothing is written and no real credential is used.
+          # Forced over IPv4: this runner has no IPv6 egress, and the address family the
+          # deployment must use is itself the question (some serverless platforms are
+          # IPv4-only), so the probe answers it explicitly.
           try:
               import psycopg
               for label, host in candidates.items():
-                  dsn = (f"postgresql://neondb_owner:not-the-password@{host}/neondb?sslmode=require")
                   try:
-                      psycopg.connect(dsn, connect_timeout=20)
+                      infos = socket.getaddrinfo(host, 5432, socket.AF_INET, socket.SOCK_STREAM)
+                      ipv4 = sorted({info[4][0] for info in infos})
+                      print(f"{label}: A records -> {', '.join(ipv4[:3])}")
+                  except Exception as error:
+                      print(f"{label}: no IPv4 address ({type(error).__name__}) -- "
+                            f"a platform without IPv6 egress could not reach it")
+                      continue
+                  conninfo = (f"host={host} hostaddr={ipv4[0]} user=neondb_owner "
+                              f"password=not-the-password dbname=neondb sslmode=require")
+                  try:
+                      psycopg.connect(conninfo, connect_timeout=20)
                       print(f"{label}: UNEXPECTED success with a dummy password")
                   except Exception as error:
                       print(f"{label}: server said -> {str(error).strip().splitlines()[0][:160]}")
