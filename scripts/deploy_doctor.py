@@ -5,8 +5,9 @@ Reads only the environment and the repository: no network calls, no key
 printing. It exists because the deployment failure modes we actually hit are
 naming and shape mistakes -- `Gemini API Key` with a space instead of
 `GEMINI_API_KEY`, a Neon *direct* endpoint behind a serverless runtime, an
-origin with a `/1pro` path that the browser will never match, or
-`WAHA_TRUST_PROMPTQL=1` left on in a public service.
+origin with a `/1pro` path that the browser will never match, a catch-all
+`rewrites` that hands every request the rewrite destination and 404s a Flask
+backend, or `WAHA_TRUST_PROMPTQL=1` left on in a public service.
 
     python scripts/deploy_doctor.py                     # check the current shell
     python scripts/deploy_doctor.py --env-file .env     # check a local file
@@ -21,6 +22,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -60,8 +62,12 @@ def _looks_placeholder(value):
     return any(token in lowered for token in PLACEHOLDERS)
 
 
-def check(env, target="render"):
-    """-> (errors, warnings, infos) as lists of messages."""
+def check(env, target="render", vercel_path=None):
+    """-> (errors, warnings, infos) as lists of messages.
+
+    ``vercel_path`` exists so a fixture can point the vercel.json rules at a
+    broken shape without editing the repository's own config.
+    """
     errors, warnings, notes = [], [], []
     env = {key: (value if value is not None else "") for key, value in env.items()}
 
@@ -195,7 +201,7 @@ def check(env, target="render"):
         notes.append("Render free: 750 ساعة/شهر لكل workspace، نوم بعد 15 دقيقة خمول، 512MB و0.1 CPU، "
                      "بلا بطاقة ائتمانية — لا تناسب حمل إنتاجي؛ صفّها كـMVP عام.")
     if target == "vercel":
-        vercel = ROOT / "vercel.json"
+        vercel = Path(vercel_path) if vercel_path else ROOT / "vercel.json"
         if not vercel.exists():
             errors.append("vercel.json مفقود.")
         else:
@@ -212,8 +218,23 @@ def check(env, target="render"):
                 if duration != 60:
                     errors.append(f"maxDuration={duration}؛ على Hobby استخدم 60 (300 تُرفض إلا مع "
                                   "Fluid Compute).")
-                if not data.get("rewrites"):
-                    warnings.append("لا rewrites في vercel.json؛ المسارات الفرعية لن تصل إلى Flask.")
+                # The platform moved: internal rewrites in backend-framework projects
+                # deliver the rewrite *destination* to the app. The catch-all this file
+                # used to ask for made Flask see /api/index for every request and 404 the
+                # whole site (observed live on cela-umber.vercel.app), so it is an error.
+                destinations = [str(entry.get("destination") or "").rstrip("/")
+                                for entry in (data.get("rewrites") or []) if isinstance(entry, dict)]
+                if any(item in ("/api/index", "/api/index.py") for item in destinations):
+                    errors.append("vercel.json يعيد كتابة المسارات إلى /api/index: في مشاريع Flask على Vercel "
+                                  "تصل الكتابة الداخلية بمسار الوجهة، فيرى التطبيق /api/index في كل طلب ويرد "
+                                  "404 على / و/health و/readyz وكل /api/*. احذف rewrites — البناء يوجّه كل "
+                                  "المسارات بنفسه.")
+                elif destinations:
+                    warnings.append("vercel.json يحمل rewrites في مشروع Flask على Vercel: الكتابة الداخلية "
+                                    "تُسلّم مسار الوجهة لا المسار الأصلي؛ تحقق أن كل مسار مقصود يصل سليمًا.")
+                else:
+                    notes.append("بلا rewrites: بناء Flask على Vercel يوجّه كل مسار إلى التطبيق بصورته "
+                                 "الأصلية — هذا هو الوضع الصحيح، لا تُعِد الكتابة الشاملة.")
                 # R2 reads the committed index at request time; excluding data/ turns
                 # /api/search into a 503 on Vercel while the repo's own tests stay green.
                 raw = ((data.get("functions") or {}).get("api/index.py") or {}).get("excludeFiles") or []
@@ -313,6 +334,18 @@ def self_test():
     errors, _w, _n = check({k: v for k, v in good.items() if k != "WAHA_SECRET"}, target="vercel")
     if not any("WAHA_SECRET" in item for item in errors):
         failures.append("vercel needs WAHA_SECRET")
+    # A catch-all rewrite to the entry point is the shape that 404'd production once;
+    # it must be reported as an error, not as a missing convenience.
+    with tempfile.TemporaryDirectory() as tmp:
+        broken = Path(tmp) / "vercel.json"
+        broken.write_text(json.dumps({
+            "$schema": "https://openapi.vercel.sh/vercel.json",
+            "functions": {"api/index.py": {"maxDuration": 60, "excludeFiles": "scripts/**"}},
+            "rewrites": [{"source": "/(.*)", "destination": "/api/index"}],
+        }), encoding="utf-8")
+        errors, _w, _n = check(good, target="vercel", vercel_path=broken)
+        if not any("/api/index" in item for item in errors):
+            failures.append("a catch-all rewrite to the entry point must be an error")
     return failures
 
 

@@ -282,16 +282,94 @@ async function openSession(id){
   $('chat-error').classList.add('hidden');
  }catch(error){toast(error.message);}
 }
-function renderConversation(){
+function renderConversation(streamLast){
+ // Any full render invalidates an in-flight stream: a tick may only write into
+ // the bubble this exact render produced, never into a newer one.
+ answerSeq++;
  const session=state.current,skill=state.skills.find(s=>s.id===session.skill_id);
  $('conversation-title').textContent=skill?.name||session.skill_name;
  $('conversation-mode').textContent=modes[session.mode]+' · محادثة خاصة محفوظة';
  if(!session.messages.length){
   $('messages').innerHTML=`<div class="chat-welcome">${icon('spark')}<h3>ابدأ بسؤال، واترك الباقي لفضولك.</h3><p>مساعدك جاهز للتعلّم معك بطريقة ${modes[session.mode]}.</p><button class="starter-prompt" id="starter-prompt">${escapeHtml(skill?.starter||'ساعدني أتعلم هذه المهارة.')}</button></div>`;
  }else{
-  $('messages').innerHTML=session.messages.map(m=>`<div class="message ${m.role}"><span class="message-avatar">${m.role==='assistant'?'و':escapeHtml((state.me.user?.name||'أ')[0])}</span><div><span class="message-label">${m.role==='assistant'?'واحة · Gemini':'أنت'}</span><div class="message-content" dir="auto">${escapeHtml(m.content)}</div></div></div>`).join('');
+  const messages=session.messages;
+  $('messages').innerHTML=messages.map((m,i)=>{
+   const streaming=streamLast&&i===messages.length-1&&m.role==='assistant';
+   return `<div class="message ${m.role}"><span class="message-avatar">${m.role==='assistant'?'و':escapeHtml((state.me.user?.name||'أ')[0])}</span><div><span class="message-label">${m.role==='assistant'?'واحة · Gemini':'أنت'}</span><div class="message-content" dir="auto">${streaming?'':escapeHtml(m.content)}</div></div></div>`;
+  }).join('');
  }
  $('messages').scrollTop=$('messages').scrollHeight;
+}
+// --- Progressive answers + source cards ----------------------------------
+// The reply is already saved server-side when it arrives; streaming only paces
+// its appearance, so a dropped frame can never lose content. Sources come from
+// one extra GET /api/search over R1's index (read-only, no model call) and are
+// built by window.WahaAnswer, which only cards RAG_LOCAL rows with citations.
+let answerSeq=0;
+const STREAM_TICK_MS=28,SOURCES_TIMEOUT_MS=6000;
+function reducedMotion(){try{return matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(error){return false;}}
+function lastAssistantBubble(){
+ const nodes=document.querySelectorAll('#messages .message.assistant .message-content');
+ return nodes.length?nodes[nodes.length-1]:null;
+}
+function streamAnswer(fullText,onDone){
+ const done=()=>{if(typeof onDone==='function')onDone();};
+ const bubble=lastAssistantBubble();
+ if(!bubble||!window.WahaAnswer||reducedMotion()||!fullText){
+  if(bubble){bubble.textContent=fullText||'';}
+  else{renderConversation();}
+  done();
+  return;
+ }
+ const mine=answerSeq;
+ const frames=window.WahaAnswer.slices(fullText);
+ let index=0;
+ bubble.classList.add('typing');
+ const finish=()=>{
+  if(mine!==answerSeq)return;
+  bubble.textContent=fullText;
+  bubble.classList.remove('typing');
+  bubble.removeEventListener('click',finish);
+  done();
+ };
+ bubble.addEventListener('click',finish);
+ const tick=()=>{
+  if(mine!==answerSeq)return;  // a newer render owns the bubbles now
+  if(index>=frames.length){finish();return;}
+  bubble.textContent=frames[index++];
+  $('messages').scrollTop=$('messages').scrollHeight;
+  setTimeout(tick,STREAM_TICK_MS);
+ };
+ tick();
+}
+async function attachSources(question){
+ const mine=answerSeq;
+ if(!backend.base||!window.WahaAnswer||!question)return;
+ let payload=null,indexMissing=false;
+ try{
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),SOURCES_TIMEOUT_MS);
+  try{
+   const response=await fetch(backend.base+'/api/search?q='+encodeURIComponent(question)+'&k='+window.WahaAnswer.SOURCES_MAX,{headers:{Accept:'application/json'},signal:controller.signal});
+   if(response.status===503){
+    try{payload=await response.json();}catch(error){payload=null;}
+    indexMissing=!!(payload&&payload.code==='rag_index_missing');
+    payload=null;
+   }else if(response.ok){
+    try{payload=await response.json();}catch(error){payload=null;}
+   }
+  }finally{clearTimeout(timer);}
+ }catch(error){return;}  // transport failure: the answer already arrived; stay silent
+ if(mine!==answerSeq)return;  // the visitor moved on; never append to a foreign bubble
+ const bubble=lastAssistantBubble();
+ if(!bubble)return;
+ const out=window.WahaAnswer.cards(payload);
+ let html=out.html;
+ if(out.state==='ignored'&&indexMissing)html=window.WahaAnswer.unavailableNote();
+ if(!html)return;
+ const host=document.createElement('div');
+ host.innerHTML=html;
+ if(host.firstChild)bubble.after(host.firstChild);
 }
 async function sendMessage(event){
  event.preventDefault();
@@ -649,7 +727,7 @@ $('delete-chat').addEventListener('click',async()=>{
  if(!confirm('حذف هذه المحادثة نهائياً؟ لا يمكن استرجاعها.'))return;
  try{await api('/api/sessions/'+state.current.id+'/delete',{});state.current=null;await refresh();switchView('chats');toast('تم حذف المحادثة');}catch(error){toast(error.message);}
 });
-$('messages').addEventListener('click',e=>{if(e.target.closest('#starter-prompt')){$('message-input').value=state.skills.find(s=>s.id===state.current.skill_id).starter;$('message-input').focus();}});
+$('messages').addEventListener('click',e=>{const source=e.target.closest('[data-source-skill]');if(source){openSkill(source.dataset.sourceSkill);return;}if(e.target.closest('#starter-prompt')){$('message-input').value=state.skills.find(s=>s.id===state.current.skill_id).starter;$('message-input').focus();}});
 $('message-form').addEventListener('submit',sendMessage);
 $('message-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('message-form').requestSubmit();}});
 async function init(){

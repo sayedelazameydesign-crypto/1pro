@@ -27,14 +27,29 @@
 ## 2) Vercel (الخادم)
 
 1. New Project → Import Git Repository → اختر `1pro`.
-2. **Framework Preset: Other**، و**Root Directory: جذر المستودع** (لا تغيّره):
-   `vercel.json` في الجذر، والدالة في `api/index.py`، و`vercel.json` يعيد كتابة كل المسارات إليها.
+2. **Framework Preset: Flask** (المكتشف تلقائيًا — لا تختر Other)، و**Root Directory: جذر
+   المستودع** (لا تغيّره): `vercel.json` في الجذر، والدالة في `api/index.py`، وبناء Flask
+   يوجّه **كل** مسار إلى التطبيق بصورته الأصلية بلا أي `rewrites`.
 3. لا تعدّل Build Command أو Output Directory. الملف يضبط كل شيء.
 
 > **`requirements.txt` في الجذر مسطّح عن قصد.** Vercel يقرأه بمحلّل لا يفهم `-r`، وإن
 > وجد سطر include يفشل البناء بـ`could not parse requirements.txt: Error parsing
 > included file`. النسخة المسطّحة تُطابق `backend/requirements.txt` بايتًا ببايت في
 > الحزم المثبَّتة، ويحرس التطابق اختبار في CI.
+
+### لا `rewrites` في هذا المستودع — ولا تُعِدها
+
+كان `vercel.json` يحمل `"rewrites": [{"source": "/(.*)", "destination": "/api/index"}]`،
+وهذه الكتابة 404ت الموقع كله: في مشاريع Backend Framework على Vercel صارت الكتابة
+الداخلية تُسلّم التطبيق **مسار الوجهة** لا المسار الأصلي، فرأى Flask `PATH_INFO=/api/index`
+في كل طلب وردّ صفحته 404 على `/` و`/health` و`/readyz` وكل `/api/*` (لوحظ حيًّا على
+`cela-umber.vercel.app`). بناء Flask يوجّه كل المسارات بنفسه
+([توثيق Flask على Vercel](https://vercel.com/docs/frameworks/backend/flask): لا حاجة إلى
+redirects في `vercel.json` ولا إلى مجلد `/api` أصلًا)، فحُذفت الكتابة.
+
+الحراسة ثلاثية: `tests/test_vercel_wrapper.py` يرفض عودتها، و`deploy_doctor.py --target
+vercel` يعتبر الكتابة إلى `/api/index` **خطأً** لا تحذيرًا، وسجل بناء سليم لا يحمل
+`Internal rewrites in backend framework projects…`.
 
 ### متغيرات البيئة (Production فقط)
 
@@ -57,9 +72,14 @@ python scripts/deploy_doctor.py --env-file service.env --target vercel
 
 # بعد أول نشر: سموك كامل يفحص R1→R6 على الخادم الحيّ
 scripts/smoke.sh https://<app>.vercel.app
+curl -sS --max-time 60 -o /dev/null -w '%{http_code}\n' https://<app>.vercel.app/   # 200 واجهة Flask
 curl -sS --max-time 60 https://<app>.vercel.app/health
 curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جسم
 ```
+
+- `/` رجع **404 من Flask** (Not Found بصفحة Werkzeug)؟ عاد `rewrites` — احذفه.
+- `/` رجع **404 من Vercel** (`404: NOT_FOUND`)؟ المشروع ليس في وضع Flask: بدّل
+  Framework Preset إلى Flask ثم أعد النشر.
 
 على `inline` لا يرجّ سكربت السموك الطابور: المهمة تنتهي داخل الطلب، فيقرأ الحالة من سجل الأحداث.
 `ai_enabled=false` فشل متوقّع إن لم يُضبط المفتاح.
@@ -71,6 +91,32 @@ curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جس�
 3. Actions → «Publish static skill catalog to Pages» → Run workflow (نشر Pages **يدوي** عمدًا).
 4. افتح الصفحة: مساحة العمل → لوحة «مكوّنات النظام» يجب أن تعرض `inline` وبطاقات حيّة من
    `/health` و`/api/agent/config`، وبطاقة «قاعدة البيانات: Postgres (Neon)».
+
+## 5) سلوك الإجابة على هذا النشر: كتابة تدريجية وبطاقات مصادر
+
+الردّ في المحادثة يُكتب تدريجيًا أمام الزائر بدل الظهور دفعة واحدة، ثم تُعلَّق تحته
+حتى 3 بطاقات مصادر من فهرس R1 عبر `GET /api/search`. ما يهمّك كناشر على Hobby:
+
+- **بلا كلفة دالة إضافية تُذكر**: الكتابة التدريجية تعمل في المتصفح فقط (الردّ محفوظ
+  في قاعدة البيانات قبل بدء الكتابة)، والبطاقات طلب `GET` واحد للقراءة فقط —
+  بلا استدعاء نموذج وبلا كتابة في القاعدة — فيبقى ضمن حدود Hobby نفسها.
+- **يعمل على `inline` كما هو**: لا يعتمد على الطابور أو الموافقات أو مدة الدالة؛
+  إن ظهر الردّ ظهرت الكتابة والبطاقات معه على Vercel وRender وPages المرتبطة بخادم.
+- **البطاقات «مقاطع ذات صلة» لا توثيق للردّ**: ردّ المحادثة يأتي من النموذج، والبطاقات
+  مقاطع قريبة من الفهرس للاستكشاف فقط، ولا تُبنى بطاقة إلا من صف `RAG_LOCAL` يحمل
+  استشهادًا حرفيًا. عند غياب الفهرس تظهر ملاحظة صامتة بدل بطاقات مخترعة.
+- **تقليل الحركة محترم**: من فعّل `prefers-reduced-motion` يرى الردّ كاملًا فورًا،
+  والنقر على فقاعة تُكتب يُكملها فورًا.
+
+### التحقق على الإنتاج
+
+1. `scripts/smoke.sh https://<app>.vercel.app` يغطي `/api/search` أصلًا (نتيجة
+   `RAG_LOCAL` باستشهاد + سؤال خارج الكتالوج بلا اختراع) — إن اخضرّ فمصدر البطاقات سليم.
+2. يدويًا: ابدأ جلسة من الواجهة (`/` على Vercel أو Pages المرتبطة بخادم)، اسأل سؤالًا
+   من مواضيع المهارات الست، وراقب: الردّ يُكتب تدريجيًا، ثم بطاقات بعناوين واستشهادات
+   وزر «افتح المهارة».
+3. رأيت «فهرس الاسترجاع غير متاح على هذا الخادم»؟ ملفات `data/rag/` غير منشورة مع
+   الدالة — أعد النشر من فرع يحملها (`data/` غير مستبعدة في `excludeFiles` عمدًا).
 
 ## ما لا يفعله هذا النشر
 

@@ -111,6 +111,20 @@ class CheckTests(unittest.TestCase):
         self.assertTrue((ROOT / "backend" / "rag_text.py").exists())
         self.assertTrue((ROOT / "data" / "rag" / "index.json").exists())
 
+    def test_a_catch_all_rewrite_to_the_entry_point_is_an_error(self):
+        # The rule used to be the other way round (a *missing* rewrite warned). Vercel
+        # now routes internal rewrites in backend-framework projects by the destination
+        # path, so the catch-all is the failure mode; a fixture proves the doctor says so
+        # without touching the repository's own vercel.json.
+        broken = {"$schema": "https://openapi.vercel.sh/vercel.json",
+                  "functions": {"api/index.py": {"maxDuration": 60, "excludeFiles": "scripts/**"}},
+                  "rewrites": [{"source": "/(.*)", "destination": "/api/index"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vercel.json"
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            errors, _w, _n = check(dict(GOOD), target="vercel", vercel_path=path)
+        self.assertIn("/api/index", codes(errors))
+
     def test_the_repo_ships_a_vercel_config_that_passes_its_own_rules(self):
         # Verbatim regression guard for the two shapes that break Vercel builds.
         data = json.loads((ROOT / "vercel.json").read_text(encoding="utf-8"))
