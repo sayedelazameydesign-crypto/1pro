@@ -7,7 +7,8 @@ naming and shape mistakes -- `Gemini API Key` with a space instead of
 `GEMINI_API_KEY`, a Neon *direct* endpoint behind a serverless runtime, an
 origin with a `/1pro` path that the browser will never match, a catch-all
 `rewrites` that hands every request the rewrite destination and 404s a Flask
-backend, or `WAHA_TRUST_PROMPTQL=1` left on in a public service.
+backend, an untrusted Host/DNS-rebinding path, an unsafe Vercel deploy hook, or
+`WAHA_TRUST_PROMPTQL=1` left on in a public service.
 
     python scripts/deploy_doctor.py                     # check the current shell
     python scripts/deploy_doctor.py --env-file .env     # check a local file
@@ -18,6 +19,7 @@ backend, or `WAHA_TRUST_PROMPTQL=1` left on in a public service.
 Exit code: 0 = clear to deploy, 1 = errors (or warnings with --strict).
 """
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -27,6 +29,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(ROOT / "backend"))
+from integrations.config import configured_trusted_hosts, normalize_hostname, normalize_origin  # noqa: E402
 PAGES_ORIGIN = "https://sayedelazameydesign-crypto.github.io"
 # NB: no empty string here — "" is a substring of everything and would flag
 # every real key. Missing values are handled by the length check above.
@@ -60,6 +65,33 @@ def _looks_placeholder(value):
     if len(stripped) < 20:
         return True
     return any(token in lowered for token in PLACEHOLDERS)
+
+
+def _is_private_or_local_host(host):
+    host = normalize_hostname(host)
+    if not host:
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        return (host == "localhost" or host.endswith((".localhost", ".local")))
+
+
+def _validate_origin_list(env, key, errors, *, production_https=False):
+    raw = str(env.get(key, "") or "")
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    for origin in origins:
+        normalized = normalize_origin(origin)
+        if normalized is None:
+            errors.append(f"`{key}` must contain exact origins only (scheme + host, no path, "
+                          f"credentials, wildcard or query): invalid entry `{origin}`.")
+            continue
+        parts = urlsplit(normalized)
+        if production_https and parts.scheme != "https":
+            errors.append(f"`{key}` must use HTTPS in production: `{normalized}`.")
+        if production_https and _is_private_or_local_host(parts.hostname or ""):
+            errors.append(f"`{key}` cannot trust localhost or a private/reserved IP in production.")
+    return origins
 
 
 def check(env, target="render", vercel_path=None):
@@ -128,20 +160,86 @@ def check(env, target="render", vercel_path=None):
     if gemini and gemini.startswith("AIza") and len(gemini) < 30:
         warnings.append("مفتاح Gemini قصير على غير العادة؛ تحقق من نسخه كاملة.")
 
-    # 5) CORS / origins.
-    allowed = [item.strip() for item in env.get("WAHA_ALLOWED_ORIGINS", "").split(",") if item.strip()]
+    # 5) CORS origins and Host validation. Never infer same-origin trust from an
+    # arbitrary Host header: that is the DNS-rebinding gap this check prevents.
+    allowed = _validate_origin_list(env, "WAHA_ALLOWED_ORIGINS", errors)
     if not allowed:
         errors.append("WAHA_ALLOWED_ORIGINS غير مضبوط: طلبات المتصفح من Pages ستُرفض "
                       "(origin_rejected).")
     for origin in allowed:
-        parts = urlsplit(origin)
-        if parts.path and parts.path != "/":
-            errors.append(f"`{origin}` فيه مسار. المتصفح يقارن الأصل فقط، فاستعمل "
-                          f"`{parts.scheme}://{parts.netloc}` (بلا /1pro).")
+        normalized = normalize_origin(origin)
+        if normalized is None:
+            continue
+        parts = urlsplit(normalized)
         if parts.scheme != "https":
-            warnings.append(f"أصل غير مشفّر في WAHA_ALLOWED_ORIGINS: {origin}")
-    if allowed and PAGES_ORIGIN not in [item.rstrip("/") for item in allowed]:
+            warnings.append(f"أصل غير مشفّر في WAHA_ALLOWED_ORIGINS: {normalized}")
+    normalized_allowed = {normalize_origin(origin) for origin in allowed}
+    if allowed and PAGES_ORIGIN not in normalized_allowed:
         errors.append(f" Pages origin `{PAGES_ORIGIN}` غير موجود في WAHA_ALLOWED_ORIGINS.")
+
+    owner_origins = _validate_origin_list(
+        env, "WAHA_OWNER_ALLOWED_ORIGINS", errors, production_https=True)
+    owner_token = env.get("WAHA_OWNER_TOKEN", "").strip()
+    if owner_token:
+        if _looks_placeholder(owner_token):
+            errors.append("WAHA_OWNER_TOKEN يبدو قصيراً أو وهمياً؛ ولّد سرّاً عشوائياً بـ "
+                          "`openssl rand -hex 32`.")
+        elif len(owner_token) < 32:
+            errors.append("WAHA_OWNER_TOKEN أقصر من 32 حرفاً؛ ولّد قيمة أطول قبل تفعيل "
+                          "واجهة الإدارة.")
+
+    # Flask TRUSTED_HOSTS must know the public service hostname. Platform-provided
+    # hostnames are accepted at runtime; custom domains need an exact manual entry.
+    trusted_raw = [item.strip() for item in
+                   str(env.get("WAHA_TRUSTED_HOSTS", "") or "").split(",") if item.strip()]
+    for host in trusted_raw:
+        if normalize_hostname(host) is None:
+            errors.append("WAHA_TRUSTED_HOSTS يقبل أسماء مضيفين exact فقط، بلا scheme أو port أو "
+                          f"wildcard: `{host}` غير صالح.")
+    for key in ("RENDER_EXTERNAL_HOSTNAME", "VERCEL_URL", "VERCEL_PROJECT_PRODUCTION_URL",
+                "VERCEL_BRANCH_URL"):
+        raw_host = str(env.get(key, "") or "").strip()
+        if raw_host and normalize_hostname(raw_host) is None:
+            errors.append(f"{key} لا يبدو hostname صالحاً لـFlask TRUSTED_HOSTS.")
+    trusted = configured_trusted_hosts(env)
+    if not trusted:
+        errors.append("لا يوجد hostname موثوق للخدمة: اضبط WAHA_TRUSTED_HOSTS (hostname exact، "
+                      "بلا scheme/port/wildcard) أو شغّل الفحص داخل Render/Vercel حيث يتوفر "
+                      "RENDER_EXTERNAL_HOSTNAME أو VERCEL_URL. هذا يمنع DNS rebinding عبر Host.")
+    for host in trusted:
+        if _is_private_or_local_host(host):
+            errors.append("WAHA_TRUSTED_HOSTS لا يجوز أن يحتوي localhost أو عنواناً خاصاً/محجوزاً "
+                          "في نشر عام.")
+
+    # Owner UI can only trust explicit origins or a same-origin Host already
+    # accepted by Flask. Validate any optional cross-origin admin allowlist.
+    for origin in owner_origins:
+        normalized = normalize_origin(origin)
+        if normalized is None:
+            continue
+        parts = urlsplit(normalized)
+        if parts.scheme != "https":
+            errors.append(f"WAHA_OWNER_ALLOWED_ORIGINS يجب أن يستخدم HTTPS في Production: {normalized}")
+
+    # The Vercel hook URL is itself a deploy credential; validate shape without
+    # printing the secret path and without doing DNS/network work in the doctor.
+    hook = env.get("DEPLOY_HOOK_URL", "").strip()
+    if hook:
+        try:
+            hook_parts = urlsplit(hook)
+            hook_host = normalize_hostname(hook_parts.hostname)
+            hook_port = hook_parts.port
+        except ValueError:
+            hook_parts, hook_host, hook_port = None, None, None
+        if (hook_parts is None or hook_parts.scheme.lower() != "https" or not hook_host
+                or hook_parts.username is not None or hook_parts.password is not None
+                or hook_parts.fragment or hook_port not in (None, 443)
+                or not hook_parts.path.startswith("/v1/integrations/deploy/")):
+            errors.append("DEPLOY_HOOK_URL يجب أن يكون رابط HTTPS قياسياً من Vercel Deploy Hooks؛ "
+                          "لم تُطبع قيمة الرابط لأنها سرّ نشر.")
+        elif hook_host != "api.vercel.com":
+            errors.append("DEPLOY_HOOK_URL يجب أن يستهدف api.vercel.com فقط؛ لا تُستخدم وجهات "
+                          "مخصّصة في Hook النشر.")
 
     # 6) The static front door's pointer to the API.
     config_path = ROOT / "docs" / "data" / "config.json"
@@ -309,6 +407,7 @@ def self_test():
         "GEMINI_API_KEY": "A" * 39,
         "WAHA_SECRET": "B" * 64,
         "WAHA_ALLOWED_ORIGINS": PAGES_ORIGIN,
+        "WAHA_TRUSTED_HOSTS": "waha.example.onrender.com",
     }
     cases = [
         ("clean env has no errors", dict(good, WAHA_TRUST_PROMPTQL="0"), [], True),
@@ -316,6 +415,14 @@ def self_test():
         ("trust promptql refused", dict(good, WAHA_TRUST_PROMPTQL="1"), None, False),
         ("missing db", {k: v for k, v in good.items() if k != "DATABASE_URL"}, None, False),
         ("origin with path", dict(good, WAHA_ALLOWED_ORIGINS=PAGES_ORIGIN + "/1pro"), None, False),
+        ("missing trusted host", {k: v for k, v in good.items() if k != "WAHA_TRUSTED_HOSTS"},
+         None, False),
+        ("wildcard trusted host", dict(good, WAHA_TRUSTED_HOSTS="*.example.com"), None, False),
+        ("insecure owner origin", dict(good, WAHA_OWNER_TOKEN="C" * 64,
+                                         WAHA_OWNER_ALLOWED_ORIGINS="http://admin.example.com"),
+         None, False),
+        ("non-vercel deploy hook", dict(good, DEPLOY_HOOK_URL="https://evil.test/deploy"),
+         None, False),
         ("sqlite db", dict(good, DATABASE_URL="sqlite:///x.db?sslmode=require"), None, False),
         ("placeholder key", dict(good, GEMINI_API_KEY="changeme"), None, False),
     ]

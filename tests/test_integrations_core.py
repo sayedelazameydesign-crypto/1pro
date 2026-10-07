@@ -6,9 +6,11 @@ through a fake Transport, which is the only reason the error paths (401, 403, 42
 happy path, because it cannot make GitHub answer 401 on demand.
 """
 import json
+import ssl
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -58,9 +60,11 @@ class FakeTransport(httpmod.Transport):
         self.answers = list(answers)
         self.calls = []
 
-    def request(self, method, url, headers=None, body=None, timeout=15):
+    def request(self, method, url, headers=None, body=None, timeout=15,
+                resolved_addresses=None):
         self.calls.append({"method": method, "url": url, "headers": headers or {},
-                           "body": body, "timeout": timeout})
+                           "body": body, "timeout": timeout,
+                           "resolved_addresses": resolved_addresses})
         if not self.answers:
             raise AssertionError("fake transport called more times than scripted")
         return self.answers.pop(0)
@@ -119,6 +123,27 @@ class ConfigTests(unittest.TestCase):
         cfg = cfgmod.load({"WAHA_OWNER_ALLOWED_ORIGINS": "https://a.test/, https://b.test"})
         self.assertEqual(cfg.owner.allowed_origins,
                          frozenset({"https://a.test", "https://b.test"}))
+
+    def test_origins_are_canonicalized_and_invalid_entries_are_dropped(self):
+        cfg = cfgmod.load({"WAHA_OWNER_ALLOWED_ORIGINS":
+                           "HTTPS://Admin.Test:443/, https://user@evil.test, "
+                           "https://admin.test/path, https://127.1"})
+        self.assertEqual(cfg.owner.allowed_origins, frozenset({"https://admin.test"}))
+        self.assertEqual(cfgmod.normalize_origin("http://localhost:80/"),
+                         "http://localhost")
+
+    def test_trusted_hosts_include_exact_manual_platform_and_origin_hosts(self):
+        hosts = set(cfgmod.trusted_hosts({
+            "WAHA_TRUSTED_HOSTS": "custom.example.test,*.attacker.test",
+            "RENDER_EXTERNAL_HOSTNAME": "waha.onrender.com",
+            "VERCEL_URL": "release.vercel.app",
+            "WAHA_ALLOWED_ORIGINS": "https://pages.example.test",
+            "WAHA_OWNER_ALLOWED_ORIGINS": "https://admin.example.test",
+        }))
+        self.assertTrue({"custom.example.test", "waha.onrender.com", "release.vercel.app",
+                         "pages.example.test", "admin.example.test", "localhost",
+                         "127.0.0.1"}.issubset(hosts))
+        self.assertFalse(any("*" in host for host in hosts))
 
 
 class RedactTests(unittest.TestCase):
@@ -187,6 +212,59 @@ class TransportGuardTests(unittest.TestCase):
 
     def test_a_public_hook_address_is_accepted(self):
         self.assertTrue(httpmod.assert_public_host("hook.test", lambda host: [PUBLIC_IP]))
+
+    def test_dns_results_must_be_nonempty_and_every_answer_public(self):
+        with self.assertRaises(httpmod.IntegrationError) as caught:
+            httpmod.resolve_public_addresses("hook.test", lambda host: [])
+        self.assertEqual(caught.exception.code, "dns_failed")
+        with self.assertRaises(httpmod.IntegrationError) as caught:
+            httpmod.resolve_public_addresses("hook.test", lambda host: [PUBLIC_IP, "10.0.0.4"])
+        self.assertEqual(caught.exception.code, "internal_address_blocked")
+
+    def test_checked_dns_answers_are_canonical_and_deduplicated(self):
+        addresses = httpmod.resolve_public_addresses(
+            "hook.test", lambda host: [PUBLIC_IP, PUBLIC_IP, "2606:4700:4700::1111"])
+        self.assertEqual(addresses, (PUBLIC_IP, "2606:4700:4700::1111"))
+
+    def test_https_urls_reject_credentials_fragments_and_nonstandard_ports(self):
+        for url in ("https://user@api.github.com/x", "https://api.github.com:8443/x",
+                    "https://api.github.com/x#fragment"):
+            with self.subTest(url=url), self.assertRaises(httpmod.IntegrationError) as caught:
+                httpmod.assert_https_host(url, httpmod.ALLOWED_API_HOSTS)
+            self.assertEqual(caught.exception.code, "invalid_target")
+
+    def test_pinned_https_connection_dials_ip_but_keeps_hostname_for_tls(self):
+        raw_socket, wrapped_socket = Mock(), Mock()
+        context = Mock()
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        context.wrap_socket.return_value = wrapped_socket
+        connection = httpmod._PinnedHTTPSConnection(
+            "hook.example.test", 443, [PUBLIC_IP], timeout=7, context=context)
+        with patch("integrations.http.socket.create_connection", return_value=raw_socket) as dial:
+            connection.connect()
+        dial.assert_called_once_with((PUBLIC_IP, 443), 7)
+        context.wrap_socket.assert_called_once_with(raw_socket,
+                                                   server_hostname="hook.example.test")
+        self.assertIs(connection.sock, wrapped_socket)
+        connection.close()
+
+    def test_urllib_transport_uses_the_checked_ip_list_without_host_header_override(self):
+        with patch("integrations.http._PinnedHTTPSConnection") as connection_type:
+            connection = connection_type.return_value
+            upstream = Mock(status=202)
+            upstream.getheaders.return_value = [("Content-Type", "application/json")]
+            upstream.read.return_value = b"{}"
+            connection.getresponse.return_value = upstream
+            result = httpmod.UrllibTransport().request(
+                "POST", "https://hook.example.test/deploy?source=waha",
+                headers={"Host": "evil.example.test", "User-Agent": "test"},
+                body=b"{}", resolved_addresses=[PUBLIC_IP])
+        connection_type.assert_called_once_with("hook.example.test", 443,
+                                                (PUBLIC_IP,), timeout=15)
+        connection.request.assert_called_once_with("POST", "/deploy?source=waha",
+                                                   body=b"{}", headers={"User-Agent": "test"})
+        self.assertEqual(result.status, 202)
 
     def test_retry_after_is_read_only_for_throttle_statuses(self):
         self.assertEqual(httpmod.retry_after_seconds(response(429, headers={"Retry-After": "30"})), 30)
@@ -343,6 +421,30 @@ class VercelClientTests(unittest.TestCase):
         self.assertEqual(out["source"], "DEPLOY_HOOK")
         self.assertNotIn("hunter2", json.dumps(out))
         self.assertEqual(transport.calls[0]["method"], "POST")
+
+    def test_hook_dns_is_resolved_once_and_the_checked_addresses_are_pinned(self):
+        answers = []
+
+        def rebinding_resolver(host):
+            answers.append(host)
+            return [PUBLIC_IP] if len(answers) == 1 else ["127.0.0.1"]
+
+        transport = FakeTransport(response(200, {"id": "dpl_pinned"}))
+        client = VercelClient(self.settings, self.redact, transport=transport,
+                              resolver=rebinding_resolver)
+        result = client.trigger_deploy_hook()
+        self.assertEqual(result["deployment_id"], "dpl_pinned")
+        self.assertEqual(answers, ["api.vercel.com"], "DNS must not be queried again after validation")
+        self.assertEqual(transport.calls[0]["resolved_addresses"], (PUBLIC_IP,))
+
+    def test_a_non_vercel_hook_host_is_refused_before_dns_or_transport(self):
+        client, transport = self.client()
+        client.settings = cfgmod.load(dict(
+            FULL_ENV, DEPLOY_HOOK_URL="https://attacker.example.test/deploy")).vercel
+        with self.assertRaises(httpmod.IntegrationError) as caught:
+            client.trigger_deploy_hook()
+        self.assertEqual(caught.exception.code, "host_not_allowed")
+        self.assertEqual(transport.calls, [])
 
     def test_a_hook_on_plain_http_is_refused(self):
         client, transport = self.client()

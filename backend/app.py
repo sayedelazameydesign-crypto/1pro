@@ -13,9 +13,9 @@ import socket
 import urllib.request
 import urllib.error
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from flask import Flask, g, jsonify, request, send_file
+from werkzeug.exceptions import SecurityError
 
 ROOT = Path(__file__).resolve().parent
 # R1 writes the retrieval index at repo root; a deployment that ships only this
@@ -54,9 +54,8 @@ from integrations.http import IntegrationError         # noqa: E402
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 POSTGRES = bool(DATABASE_URL)
 TRUST_PROMPTQL = os.environ.get("WAHA_TRUST_PROMPTQL", "") == "1"
-ALLOWED_ORIGINS = {origin.strip().rstrip("/")
-                   for origin in os.environ.get("WAHA_ALLOWED_ORIGINS", "").split(",")
-                   if origin.strip()}
+ALLOWED_ORIGINS = set(integrations_config.parse_origins(
+    os.environ.get("WAHA_ALLOWED_ORIGINS", "")))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 PROMPTQL_API_URL = os.environ.get("PROMPTQL_PLATFORM_API_URL", "")
 
@@ -106,6 +105,12 @@ AI_RETRY_AFTER_MAX_SECONDS = 86400
 DEFAULT_RETRY_AFTER_SECONDS = 60
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+# The first before_request handler forces Flask's Host validation before API
+# protection or CORS runs. Without this allowlist, an attacker can DNS-rebind
+# their own domain to the service and make Origin == Host look same-origin.
+# Render and Vercel expose their service host at runtime; custom domains belong
+# in WAHA_TRUSTED_HOSTS.
+app.config["TRUSTED_HOSTS"] = list(integrations_config.trusted_hosts())
 app.config["MAX_CONTENT_LENGTH"] = 24 * 1024
 app.config["JSON_AS_ASCII"] = False
 app.json.ensure_ascii = False
@@ -601,10 +606,18 @@ def csrf_for(user_id):
 
 
 def origin_allowed(origin):
-    parts = urlsplit(origin)
-    if parts.netloc and parts.netloc == request.host:
+    """Allow explicit CORS origins or a Host-validated true same-origin request."""
+    if not getattr(g, "trusted_host", True):
+        return False
+    normalized = integrations_config.normalize_origin(origin)
+    if normalized is None:
+        return False
+    if normalized in ALLOWED_ORIGINS:
         return True
-    return origin.rstrip("/") in ALLOWED_ORIGINS
+    # request.host is validated against Flask TRUSTED_HOSTS before this hook. Keep
+    # same-origin hosting convenient without treating any matching Host/Origin
+    # pair as trustworthy (the DNS-rebinding failure this guard prevents).
+    return normalized == integrations_config.normalize_origin(request.host_url)
 
 
 # --- Owner integrations: authentication, session, limits ----------------------
@@ -662,12 +675,19 @@ def owner_csrf(issued):
 
 
 def owner_origin_allowed(origin):
-    """Same-origin, or an explicit WAHA_OWNER_ALLOWED_ORIGINS entry. Does *not*
-    fall back to the visitor list -- see the admin CORS policy above."""
-    parts = urlsplit(origin)
-    if parts.netloc and parts.netloc == request.host:
+    """Same-origin on a Host-validated hostname, or an explicit owner origin.
+
+    Never infer trust from ``Origin.netloc == request.host`` alone: with an
+    attacker-controlled Host header, DNS rebinding can make that comparison true.
+    """
+    if not getattr(g, "trusted_host", True):
+        return False
+    normalized = integrations_config.normalize_origin(origin)
+    if normalized is None:
+        return False
+    if normalized in INTEGRATIONS_CONFIG.owner.allowed_origins:
         return True
-    return origin.rstrip("/") in INTEGRATIONS_CONFIG.owner.allowed_origins
+    return normalized == integrations_config.normalize_origin(request.host_url)
 
 
 def owner_identity():
@@ -742,9 +762,8 @@ def integration_error_response(error):
     status = 502
     if error.code == "not_configured":
         status = 503
-    elif error.code in ("invalid_config", "invalid_request"):
-        status = 400
-    elif error.code == "host_not_allowed" or error.code == "insecure_target":
+    elif error.code in ("invalid_config", "invalid_request", "invalid_target",
+                        "host_not_allowed", "insecure_target"):
         status = 400
     elif error.code in ("github_unauthorized", "vercel_unauthorized"):
         status = 502
@@ -755,6 +774,18 @@ def integration_error_response(error):
     if error.retry_after is not None:
         body.headers["Retry-After"] = str(error.retry_after)
     return body, http_status
+
+
+@app.before_request
+def validate_request_host():
+    """Reject unknown Host headers before any API or same-origin check runs."""
+    try:
+        request.host  # Werkzeug enforces app.config["TRUSTED_HOSTS"] here.
+    except SecurityError:
+        g.trusted_host = False
+        return fail("اسم المضيف غير مسموح.", 400, "untrusted_host")
+    g.trusted_host = True
+    return None
 
 
 @app.before_request

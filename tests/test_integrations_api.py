@@ -66,9 +66,10 @@ class FakeTransport(httpmod.Transport):
         self.answers = list(answers)
         self.calls = []
 
-    def request(self, method, url, headers=None, body=None, timeout=15):
+    def request(self, method, url, headers=None, body=None, timeout=15,
+                resolved_addresses=None):
         self.calls.append({"method": method, "url": url, "headers": headers or {},
-                           "body": body})
+                           "body": body, "resolved_addresses": resolved_addresses})
         if not self.answers:
             raise AssertionError("fake transport called more times than scripted")
         return self.answers.pop(0)
@@ -206,6 +207,30 @@ class OwnerSurfaceTests(unittest.TestCase):
                                  headers={**headers, "Origin": "https://admin.test"})
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.headers["Access-Control-Allow-Origin"], "https://admin.test")
+
+    def test_dns_rebinding_host_is_rejected_even_when_origin_matches_it(self):
+        # A naive same-origin check accepts Origin == Host. With DNS rebinding,
+        # both can name the attacker's domain while the socket reaches this app.
+        result = self.client.post(
+            "/api/owner/login", json={"token": OWNER_TOKEN},
+            headers={"Origin": "https://rebind.attacker.test",
+                     "Host": "rebind.attacker.test"})
+        self.assertEqual(result.status_code, 400)
+        self.assertNotIn("Access-Control-Allow-Origin", result.headers)
+
+    def test_same_origin_owner_page_still_works_for_an_explicitly_trusted_host(self):
+        result = self.client.post(
+            "/api/owner/login", json={"token": OWNER_TOKEN},
+            headers={"Origin": "https://admin.test", "Host": "admin.test"})
+        self.assertEqual(result.status_code, 201, result.get_json())
+        self.assertEqual(result.headers["Access-Control-Allow-Origin"], "https://admin.test")
+
+    def test_local_same_origin_remains_available_for_development(self):
+        result = self.client.post(
+            "/api/owner/login", json={"token": OWNER_TOKEN},
+            headers={"Origin": "http://localhost", "Host": "localhost"})
+        self.assertEqual(result.status_code, 201, result.get_json())
+        self.assertEqual(result.headers["Access-Control-Allow-Origin"], "http://localhost")
 
     def test_the_visitor_surface_still_uses_the_visitor_origin_list(self):
         # The admin policy must not have tightened the chat path by accident.

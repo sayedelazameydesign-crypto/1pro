@@ -59,6 +59,10 @@ vercel` يعتبر الكتابة إلى `/api/index` **خطأً** لا تحذي
 | `GEMINI_API_KEY` | من Google AI Studio | لا يوضع في المستودع ولا في المحادثة؛ عند أي انكشاف استبدله فورًا |
 | `WAHA_SECRET` | **اضبطه يدويًا هنا** | بخلاف Render (حيث يولّده `render.yaml`)، بدونه تُبطَل جلسات الزوار مع كل إعادة تشغيل |
 | `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | origin فقط بدون `/1pro`؛ المتصفح يقارن الأصل لا المسار |
+| `WAHA_TRUSTED_HOSTS` | `cela-umber.vercel.app` أو نطاقاتك المخصصة | أسماء مضيفين exact مفصولة بفواصل، بلا scheme أو port أو wildcard. Vercel يضيف `VERCEL_URL` وأصل الإنتاج تلقائيًا؛ أضف كل alias مخصص هنا. أدرج اسم الإنتاج في `service.env` ليعرفه `deploy_doctor` محليًا |
+| `WAHA_OWNER_ALLOWED_ORIGINS` | اختياري، مثلاً `https://cela-umber.vercel.app` | CORS خاص بـ`/integrations`, منفصل عن Origin الزائر. نفس المصدر يبقى مسموحًا فقط على Host اجتاز `TRUSTED_HOSTS` |
+
+**DNS/Host hardening:** يرفض Flask أي Host خارج `WAHA_TRUSTED_HOSTS` أو اسم المنصة (`VERCEL_URL`/`VERCEL_PROJECT_PRODUCTION_URL`) قبل تشغيل أي route؛ لهذا لا يستطيع نطاق attacker أن يصبح «same-origin» عبر DNS rebinding. Deploy Hook يقبل `api.vercel.com` فقط، ويثبت IP العام الذي حُلّ في الفحص داخل اتصال TLS نفسه مع التحقق من الشهادة باسم المضيف الأصلي.
 
 **يُمنع** ضبط أيٍّ من: `WAHA_TRUST_PROMPTQL` (يقبل ترويسة هوية بلا تحقّق توقيع على خدمة عامة)
 و`PROMPTQL_PLATFORM_API_URL` (يحوّل مسار AI إلى البوابة ويُلغي مسار المفتاح المباشر).

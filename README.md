@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 344 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
+على `sqlite` و`postgres` معًا: 360 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -259,15 +259,16 @@ GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المت�
 الحية يعيد فحص المحضر كاملًا قبل طباعته.
 
 **الحماية:** جلسة موقّعة بـHMAC تنتهي بعد 8 ساعات · CSRF مرتبط بالجلسة · قائمة CORS
-خاصة بالإدارة · نص تأكيد لكل عملية كتابة · حدّ 3 عمليات كتابة في الدقيقة. التفصيل
-والأسباب في `ARCHITECTURE.md` §7.
+خاصة بالإدارة · Flask `TRUSTED_HOSTS` لمنع Host/DNS rebinding · فحص وحصر DNS لـDeploy Hook
+ثم تثبيت عناوين IP في اتصال TLS · نص تأكيد لكل عملية كتابة · حدّ 3 عمليات كتابة في الدقيقة.
+التفصيل والأسباب في `ARCHITECTURE.md` §7.
 
 ### التحقق على ثلاث طبقات
 
 | الطبقة | الملف | ما تثبته |
 |---|---|---|
-| Unit | `tests/test_integrations_core.py` (46) | الإعداد والمُحمِّر وحراس النقل والعميلان، بنقل مُزيَّف — بما فيها 401/403/422/429/5xx |
-| Integration | `tests/test_integrations_api.py` (32) | الحافة كلها عبر عميل Flask: من يُسمح له، من أي مصدر، بأي CSRF، كم مرة، وبعد أي تأكيد |
+| Unit | `tests/test_integrations_core.py` (55) | الإعداد والمُحمِّر وحراس النقل والعميلان، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx |
+| Integration | `tests/test_integrations_api.py` (35) | الحافة كلها عبر عميل Flask: Host موثوق ضد DNS rebinding، ومن يُسمح له، ومن أي مصدر، وبأي CSRF أو تأكيد |
 | Live | `tests/test_integrations_live.py` (6) + `scripts/integrations_live_check.py` | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
 
 الطبقة الحية معطّلة افتراضيًا ولا تعمل في CI:
@@ -313,7 +314,7 @@ python scripts/integrations_live_check.py --self-test
 | `DATABASE_URL` | من لوحة Neon (رابط **pooled**) | أبقِ `sslmode=require`. إذا فشل الاتصال احذف `channel_binding=require` (قد لا يدعمه driver قديم)؛ والكود يعطّل prepared statements عبر `prepare_threshold=None` ليتوافق مع pgbouncer في وضع transaction |
 | `GEMINI_API_KEY` | من Google AI Studio | لا تضعه في المستودع أبداً ولا في أي محادثة أو لقطة شاشة؛ إن انكشف فاستبدله (rotate) فوراً من AI Studio |
 | `WAHA_SECRET` | **لا تضبطه يدويًا عند استخدام Blueprint** | `render.yaml` يعلن `generateValue: true` فيولّده Render مرة واحدة ويثبّته عبر النشرات؛ إدخاله يدويًا يتجاوز المولَّد أو يتعارض معه. خارجه (تشغيل محلي) يُنشأ ملف جانبي مؤقت يضيع مع كل نشر فتُبطَل جلسات الزوار |
-| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار |
+| `WAHA_ALLOWED_ORIGINS` | `https://sayedelazameydesign-crypto.github.io` | قائمة CORS مفصولة بفواصل. القيمة **origin فقط بدون `/1pro`** لأن المتصفح يقارن الـorigin لا المسار؛ same-origin يبقى مسموحًا فقط إذا كان Host ضمن `TRUSTED_HOSTS` |
 | `WAHA_MODEL` | اختياري | يتجاوز النموذج في `runtime-config.json` |
 | `WAHA_RAG_DIR` | اختياري (`<repo>/data/rag`) | دليل فهرس R1 الذي يقرأه `GET /api/search`. يُضبط في اختبار أو نسخة بديلة فقط؛ مساره الخاطئ يرجع `503 rag_index_missing` ولا يُبدَّل بنتائج مُختَرَعة |
 | `WAHA_OWNER_TOKEN` | سرّ تولّده أنت | يفتح `/integrations`. بلا قيمة تُرجع كل مسارات `/api/owner/*` ‏`503 not_configured` ولا يُقبل دخول أبدًا. ولّده بـ`openssl rand -hex 32` وضعه في Production فقط |
@@ -322,8 +323,9 @@ python scripts/integrations_live_check.py --self-test
 | `GITHUB_WORKFLOW_ID` | اسم الملف أو رقمه | بدونه تبقى القراءة متاحة وتُعطَّل كتابة `dispatch` وحدها |
 | `VERCEL_TOKEN` | من Vercel | للقراءة فقط. لا يستطيع النشر: النشر يمرّ بالـhook |
 | `VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` | من لوحة Vercel | ‏`TEAM_ID` مطلوب لحساب فرق؛ بدونه يُسأل الحساب الشخصي |
-| `DEPLOY_HOOK_URL` | من Vercel · Deploy Hooks | **الرابط نفسه هو السر**، فيُعامَل كسرّ: لا يُنشر ولا يُسجَّل. يجب أن يكون HTTPS على عنوان عام، وإلا رُفض بـ`insecure_target` أو`internal_address_blocked` |
-| `WAHA_OWNER_ALLOWED_ORIGINS` | اختياري | قائمة CORS **خاصة بصفحة الإدارة**، مستقلة عن `WAHA_ALLOWED_ORIGINS`. افتراضيًا: نفس المصدر فقط |
+| `DEPLOY_HOOK_URL` | من Vercel · Deploy Hooks | **الرابط نفسه هو السر**، فيُعامَل كسرّ: لا يُنشر ولا يُسجَّل. يقبل فقط HTTPS على `api.vercel.com`؛ تُفحص كل إجابات DNS كعناوين عامة ثم تُثبَّت في الاتصال مع إبقاء اسم المضيف للتحقق من TLS، فلا توجد نافذة DNS-rebinding بين الفحص والاتصال |
+| `WAHA_OWNER_ALLOWED_ORIGINS` | اختياري | قائمة CORS **خاصة بصفحة الإدارة**، مستقلة عن `WAHA_ALLOWED_ORIGINS`. افتراضيًا: نفس المصدر فقط، لكن بعد قبول Host صريح من `TRUSTED_HOSTS` |
+| `WAHA_TRUSTED_HOSTS` | اختياري على المنصة، مطلوب للمضيفات المخصصة وملف الفحص المحلي | أسماء مضيفين exact مفصولة بفواصل، بلا scheme أو port أو wildcard. Render يثق تلقائيًا بـ`RENDER_EXTERNAL_HOSTNAME`، وVercel بـ`VERCEL_URL` وأصل الإنتاج؛ أضف هنا النطاق المخصص. `deploy_doctor` يرفض نشرًا عامًا بلا مصدر host موثوق |
 | `WAHA_OWNER_SESSION_TTL` | `28800` (8 ساعات) | يُحصر بين 300 و86400 ثانية |
 | `WAHA_OWNER_WRITE_LIMIT_PER_MINUTE` | `3` | حدّ عمليات الكتابة، في عدّاد مستقل عن القراءة |
 | `AGENT_*` | اختياري | ميزانيات طبقة الوكيل وحدودها؛ الجدول الكامل في «طبقة الوكيل». قبل النشر شغّل `python scripts/deploy_doctor.py --target render` |
