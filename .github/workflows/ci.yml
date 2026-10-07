@@ -26,9 +26,11 @@ jobs:
       - run: python scripts/rag_eval.py --check
       # R7: the boundary's enforcement tests skip where the kernel forbids
       # unprivileged user namespaces, and a skip must never read as a pass. This
-      # prints which of the two this runner gives, so the CI log answers the
-      # question instead of the reader assuming it. It deliberately does not
-      # change kernel policy to make the tests run.
+      # prints which of the two this runner gives *and* raises it as an annotation,
+      # so a green run states in the pull request that the behavioural proof did
+      # not happen here -- a green tick that hides 22 skipped enforcement tests is
+      # the same lie as a test that passes without asserting anything. It
+      # deliberately does not change kernel policy to make the tests run.
       - name: Report whether the code-execution boundary can be built here
         run: |
           python - <<'PY'
@@ -42,9 +44,17 @@ jobs:
           print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
           if runner.supports():
               print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+              print("::notice title=code-execution boundary::%s -- the enforcement "
+                    "tests ran here" % runner.name)
           else:
+              reason = getattr(runner, "reason", "incomplete boundary")
               print("=> those tests will SKIP; execution refuses here by design")
-              print("   reason:", getattr(runner, "reason", "incomplete boundary"))
+              print("   reason:", reason)
+              print("::warning title=code-execution boundary not built here::%s. The "
+                    "enforcement and host-write tests in tests/test_agent_sandbox.py "
+                    "SKIPPED on this runner, so this run proves the refusal path and "
+                    "nothing about enforcement -- which is a coverage gap to close, "
+                    "not a pass. Reason it gave: %s" % (runner.name, reason))
           PY
       # The suite runs exactly as before; what changes is what happens when it
       # fails. This repository has already paid for the lesson that a red job whose
@@ -131,9 +141,11 @@ jobs:
       - run: python scripts/rag_eval.py --check
       # R7: the boundary's enforcement tests skip where the kernel forbids
       # unprivileged user namespaces, and a skip must never read as a pass. This
-      # prints which of the two this runner gives, so the CI log answers the
-      # question instead of the reader assuming it. It deliberately does not
-      # change kernel policy to make the tests run.
+      # prints which of the two this runner gives *and* raises it as an annotation,
+      # so a green run states in the pull request that the behavioural proof did
+      # not happen here -- a green tick that hides 22 skipped enforcement tests is
+      # the same lie as a test that passes without asserting anything. It
+      # deliberately does not change kernel policy to make the tests run.
       - name: Report whether the code-execution boundary can be built here
         run: |
           python - <<'PY'
@@ -147,9 +159,17 @@ jobs:
           print("filesystem       :", "isolated" if runner.filesystem_isolated else "NOT isolated")
           if runner.supports():
               print("=> the enforcement tests in tests/test_agent_sandbox.py RAN")
+              print("::notice title=code-execution boundary::%s -- the enforcement "
+                    "tests ran here" % runner.name)
           else:
+              reason = getattr(runner, "reason", "incomplete boundary")
               print("=> those tests will SKIP; execution refuses here by design")
-              print("   reason:", getattr(runner, "reason", "incomplete boundary"))
+              print("   reason:", reason)
+              print("::warning title=code-execution boundary not built here::%s. The "
+                    "enforcement and host-write tests in tests/test_agent_sandbox.py "
+                    "SKIPPED on this runner, so this run proves the refusal path and "
+                    "nothing about enforcement -- which is a coverage gap to close, "
+                    "not a pass. Reason it gave: %s" % (runner.name, reason))
           PY
       # The suite runs exactly as before; what changes is what happens when it
       # fails. This repository has already paid for the lesson that a red job whose
