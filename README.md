@@ -6,10 +6,17 @@ https://github.com/sayedelazameydesign-crypto/1pro
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
 على `sqlite` و`postgres` معًا: 260 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
-`v0.1.0`. **ما لم يحدث بعد:** لا خادم منشور — `docs/` يبقى كتالوجًا ثابتًا ما دام
-`docs/data/config.json.api_base` فارغًا، ولا Neon/Render/Vercel مُهيَّأ من هنا، ولا مفتاح
-خدمة في المستودع. ما بقي: إعادة نشر Pages، تفعيل Discussions، **اختر LICENSE**، ثم نشر
-الخادم (يتطلب حسابات المالك) وأول smoke حيّ. حالة CI الفعلية تُعرض في Actions.
+`v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
+(`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
+من Flask نفسه — أي أن إصلاح الـ catch-all (PR #12) صامد. و`docs/data/config.json.api_base`
+يشير إليه، فـ Pages يخرج من وضع الكتالوج الثابت بعد أول إعادة نشر.
+
+**ما لم يحدث بعد:** الخادم المنشور بلا مفاتيح إنتاج — `/health` الحيّ يقول
+`"database":"sqlite"` و`"ai":"disabled"`، أي أن `DATABASE_URL` (Neon) و`GEMINI_API_KEY`
+و`WAHA_SECRET` و`WAHA_ALLOWED_ORIGINS` غير مضبوطة في بيئة Vercel. على Vercel يسكن
+SQLite في `/tmp` الزائل، فكل محادثة تضيع مع إعادة التدوير: **لا تعتبره نشرًا حقيقيًا قبل
+ضبط `DATABASE_URL`.** الطريق: `scripts/vercel_env_sync.sh` (أو لصق المتغيرات يدويًا) ثم
+إعادة نشر Pages، تفعيل Discussions، و**اختر LICENSE**. حالة CI الفعلية تُعرض في Actions.
 
 ## نسختان واضحتان
 
@@ -431,8 +438,11 @@ python app.py
       و2882 بايت و`pdf_count = 0` ⇒ `vector_enabled: false`. تُفتح عند تخطّي حدّ مقيس.
 - [ ] إعادة نشر Pages بنشرة واحدة (آخر نشر سابق على `docs/assets/app.js` و`config.json`
       الحاليَّين): Actions → «Publish static skill catalog to Pages» → Run workflow.
-- [ ] إنشاء حسابات Render/Neon ومفاتيح الخدمة ونشر الخادم فعلياً (يتطلب
-      حسابات المالك؛ الكود و`render.yaml` جاهزان) ثم ضبط `api_base`.
+- [x] نشر الخادم فعلياً: Vercel يخدم `backend/app.py` على `https://cela-umber.vercel.app`
+      من `main` (`72371d6`)، و`api_base` مضبوط عليه.
+- [ ] ضبط مفاتيح الإنتاج على Vercel — `DATABASE_URL` (Neon) و`GEMINI_API_KEY`
+      و`WAHA_SECRET` و`WAHA_ALLOWED_ORIGINS` — عبر `scripts/vercel_env_sync.sh`. حتى
+      ذلك الحين النشر يعمل بـSQLite زائل في `/tmp` وبلا نموذج (`ai: disabled`).
 - [ ] تفعيل Discussions أو إعداد نطاق مخصص.
 - [ ] اختيار ترخيص للكود قبل أي إعادة استخدام عامة.
 - [ ] Streaming للمحادثة نفسها، أدوات أكثر، ومهام أطول من عمر الطلب — كلها تحتاج
