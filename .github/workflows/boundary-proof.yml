@@ -14,6 +14,23 @@ name: Boundary proof
 # pull requests -- for the sake of one test. A security default is not a knob a test
 # commit gets to turn.
 #
+# The order in which that gap may be closed. It is an order, not a menu:
+#
+#   1. a dedicated VM or microVM (Firecracker) for this job alone, with the
+#      restriction lifted *inside it*. The constraint is in the host kernel, so a
+#      container cannot lift it for itself -- "self-hosted" is not the boundary,
+#      "single purpose" is.
+#   2. capabilities instead of an unprivileged namespace: CAP_SYS_CHROOT and
+#      CAP_SYS_ADMIN on one transient task. The sandbox chroots, so it does not need
+#      an unprivileged user namespace at all. `container:` here cannot grant
+#      capabilities, so this needs `docker run` of our own.
+#   3. this job as it stands: the gap documented, the refusal path proven, the
+#      enforcement proven on a development host, and the annotation saying exactly
+#      that on every run.
+#
+# And the rule that follows from the order: never lift the restriction on a machine
+# that runs anything other than the boundary job.
+#
 # So the coverage lives here instead: one job, on a runner that is *allowed* to build
 # the boundary, running only the enforcement tests. It is `workflow_dispatch` only --
 # never a silent gate that would sit pending on every pull request -- and it fails on
