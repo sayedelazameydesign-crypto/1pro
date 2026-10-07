@@ -67,6 +67,46 @@ jobs:
           print(f"skeleton = {skeleton[:120]}")
           PY
 
+      - name: Derive and verify the project's endpoint hostnames (no secret involved)
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee /tmp/hosts.txt
+          import socket
+
+          # Taken from the project's Neon Auth URL:
+          #   https://ep-small-meadow-b424bx1m.neonauth.c-6.us-east-2.aws.neon.tech/neondb/auth
+          # The compute endpoint and region, therefore, are:
+          endpoint = "ep-small-meadow-b424bx1m"
+          region = "c-6.us-east-2.aws"
+          candidates = {
+              "direct": f"{endpoint}.{region}.neon.tech",
+              "pooled": f"{endpoint}-pooler.{region}.neon.tech",
+          }
+          for label, host in candidates.items():
+              try:
+                  addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, 5432)})
+                  print(f"{label}: DNS ok {host} -> {', '.join(addresses[:3])}")
+                  with socket.create_connection((host, 5432), timeout=15):
+                      print(f"{label}: TCP 5432 reachable")
+              except Exception as error:
+                  print(f"{label}: FAIL {type(error).__name__}: {error} ({host})")
+
+          # A wrong password proves the host, the database and the role all exist:
+          # Postgres answers "password authentication failed for user ..." only after
+          # it has resolved all three. Nothing is written and no real credential is used.
+          try:
+              import psycopg
+              for label, host in candidates.items():
+                  dsn = (f"postgresql://neondb_owner:not-the-password@{host}/neondb?sslmode=require")
+                  try:
+                      psycopg.connect(dsn, connect_timeout=20)
+                      print(f"{label}: UNEXPECTED success with a dummy password")
+                  except Exception as error:
+                      print(f"{label}: server said -> {str(error).strip().splitlines()[0][:160]}")
+          except ImportError:
+              print("psycopg unavailable; skipped the server-message proof")
+          PY
+
       - name: Presence of the session secret
         run: |
           set -uo pipefail
@@ -141,5 +181,6 @@ jobs:
             printf '::warning title=dbcheck-%s::%s\n' "$1" "${text:-"(empty)"}"
           }
           emit shape
+          emit hosts
           emit session
           emit live
