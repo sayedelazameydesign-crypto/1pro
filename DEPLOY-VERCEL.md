@@ -27,14 +27,29 @@
 ## 2) Vercel (الخادم)
 
 1. New Project → Import Git Repository → اختر `1pro`.
-2. **Framework Preset: Other**، و**Root Directory: جذر المستودع** (لا تغيّره):
-   `vercel.json` في الجذر، والدالة في `api/index.py`، و`vercel.json` يعيد كتابة كل المسارات إليها.
+2. **Framework Preset: Flask** (المكتشف تلقائيًا — لا تختر Other)، و**Root Directory: جذر
+   المستودع** (لا تغيّره): `vercel.json` في الجذر، والدالة في `api/index.py`، وبناء Flask
+   يوجّه **كل** مسار إلى التطبيق بصورته الأصلية بلا أي `rewrites`.
 3. لا تعدّل Build Command أو Output Directory. الملف يضبط كل شيء.
 
 > **`requirements.txt` في الجذر مسطّح عن قصد.** Vercel يقرأه بمحلّل لا يفهم `-r`، وإن
 > وجد سطر include يفشل البناء بـ`could not parse requirements.txt: Error parsing
 > included file`. النسخة المسطّحة تُطابق `backend/requirements.txt` بايتًا ببايت في
 > الحزم المثبَّتة، ويحرس التطابق اختبار في CI.
+
+### لا `rewrites` في هذا المستودع — ولا تُعِدها
+
+كان `vercel.json` يحمل `"rewrites": [{"source": "/(.*)", "destination": "/api/index"}]`،
+وهذه الكتابة 404ت الموقع كله: في مشاريع Backend Framework على Vercel صارت الكتابة
+الداخلية تُسلّم التطبيق **مسار الوجهة** لا المسار الأصلي، فرأى Flask `PATH_INFO=/api/index`
+في كل طلب وردّ صفحته 404 على `/` و`/health` و`/readyz` وكل `/api/*` (لوحظ حيًّا على
+`cela-umber.vercel.app`). بناء Flask يوجّه كل المسارات بنفسه
+([توثيق Flask على Vercel](https://vercel.com/docs/frameworks/backend/flask): لا حاجة إلى
+redirects في `vercel.json` ولا إلى مجلد `/api` أصلًا)، فحُذفت الكتابة.
+
+الحراسة ثلاثية: `tests/test_vercel_wrapper.py` يرفض عودتها، و`deploy_doctor.py --target
+vercel` يعتبر الكتابة إلى `/api/index` **خطأً** لا تحذيرًا، وسجل بناء سليم لا يحمل
+`Internal rewrites in backend framework projects…`.
 
 ### متغيرات البيئة (Production فقط)
 
@@ -57,9 +72,14 @@ python scripts/deploy_doctor.py --env-file service.env --target vercel
 
 # بعد أول نشر: سموك كامل يفحص R1→R6 على الخادم الحيّ
 scripts/smoke.sh https://<app>.vercel.app
+curl -sS --max-time 60 -o /dev/null -w '%{http_code}\n' https://<app>.vercel.app/   # 200 واجهة Flask
 curl -sS --max-time 60 https://<app>.vercel.app/health
 curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جسم
 ```
+
+- `/` رجع **404 من Flask** (Not Found بصفحة Werkzeug)؟ عاد `rewrites` — احذفه.
+- `/` رجع **404 من Vercel** (`404: NOT_FOUND`)؟ المشروع ليس في وضع Flask: بدّل
+  Framework Preset إلى Flask ثم أعد النشر.
 
 على `inline` لا يرجّ سكربت السموك الطابور: المهمة تنتهي داخل الطلب، فيقرأ الحالة من سجل الأحداث.
 `ai_enabled=false` فشل متوقّع إن لم يُضبط المفتاح.

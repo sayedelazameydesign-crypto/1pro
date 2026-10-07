@@ -1,8 +1,16 @@
-"""Vercel Function entry point (file-based function in the /api directory).
+"""Vercel Function entry point.
 
-Vercel's Python runtime detects the WSGI callable named ``app`` and serves it;
-``vercel.json`` rewrites every path to ``/api/index`` so the Flask router owns
-all routes (including ``/health`` and ``/readyz``).
+Vercel builds this repository as a Flask backend-framework project, resolves the
+WSGI callable named ``app`` here, and hands every request to it **with its
+original path** -- so the Flask router below owns ``/``, ``/health``, ``/readyz``
+and all of ``/api/*`` without any help from ``vercel.json``.
+
+Do not add a catch-all ``rewrites`` entry back to that file. Internal rewrites in
+backend-framework projects deliver the *destination* path to the app, so
+``/(.*) -> /api/index`` made Flask see ``PATH_INFO=/api/index`` for every request
+and answer its own 404 page on ``/``, ``/health``, ``/readyz`` and ``/api/*``
+(observed live on cela-umber.vercel.app). ``tests/test_vercel_wrapper.py`` and
+``scripts/deploy_doctor.py --target vercel`` fail if the property returns.
 """
 import sys
 from pathlib import Path

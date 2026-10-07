@@ -6,6 +6,5 @@
       "maxDuration": 60,
       "excludeFiles": "{docs/**,scripts/**,tests/**,.github/**,skills/**,_handoff/**,render.yaml}"
     }
-  },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+  }
 }

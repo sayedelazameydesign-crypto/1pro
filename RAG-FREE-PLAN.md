@@ -331,15 +331,15 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_agent_no_platform_branching.py` | 14 |
 | `tests/test_agent_runtime.py` | 25 |
 | `tests/test_components_contract.py` | 8 |
-| `tests/test_deploy_doctor.py` | 17 |
+| `tests/test_deploy_doctor.py` | 18 |
 | `tests/test_docs_match_code.py` | 11 |
 | `tests/test_nvidia.py` | 13 |
 | `tests/test_rag_eval.py` | 14 |
 | `tests/test_rag_index.py` | 38 |
 | `tests/test_rag_search.py` | 29 |
-| `tests/test_vercel_wrapper.py` | 4 |
+| `tests/test_vercel_wrapper.py` | 5 |
 | `tests/test_waha.py` | 23 |
-| **المجموع** | **258** |
+| **المجموع** | **260** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
 فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ
