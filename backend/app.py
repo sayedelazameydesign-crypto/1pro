@@ -35,7 +35,7 @@ from agent.config import AgentConfig            # noqa: E402
 from agent.providers import GeminiProvider, GatewayProvider  # noqa: E402
 from agent.service import Service               # noqa: E402
 from agent import execution as agent_execution      # noqa: E402
-from agent.store import Store                   # noqa: E402
+from agent.store import Store, TERMINAL_STATUSES, ACTIVE_STATUSES                   # noqa: E402
 import rag_search                          # noqa: E402  (R2: lexical search over data/rag)
 from agent.runtime import Deps as AgentDeps, ProviderError as AgentProviderError  # noqa: E402
 from agent.tools import build_registry          # noqa: E402
@@ -1402,6 +1402,46 @@ def agent_config():
     )
 
 
+# --- Projects API -------------------------------------------------------------
+@app.get("/api/agent/projects")
+def agent_projects_list():
+    user = agent_owner()
+    if not user:
+        return jsonify(projects=[])
+    return jsonify(projects=agent_store.list_projects(user))
+
+
+@app.post("/api/agent/projects")
+def agent_project_create():
+    user = agent_owner()
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    if not 1 <= len(name) <= 120:
+        return fail("اسم المشروع يجب أن يكون بين 1 و120 حرفاً.")
+    instructions = str(data.get("instructions", "")).strip()
+    if len(instructions) > 4000:
+        return fail("التعليمات يجب ألا تتجاوز 4000 حرف.")
+    context = str(data.get("context", "")).strip()
+    if len(context) > 8000:
+        return fail("السياق يجب ألا يتجاوز 8000 حرف.")
+    project_id = agent_store.create_project(user, name, instructions, context)
+    project = agent_store.get_project(project_id, user)
+    return jsonify(project=project), 201
+
+
+@app.get("/api/agent/projects/<project_id>")
+def agent_project_get(project_id):
+    user = agent_owner()
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+    detail = agent_store.get_project_detail(project_id, user)
+    if detail is None:
+        return fail("المشروع غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(**detail)
+
+
 @app.post("/api/agent/tasks")
 def agent_create_task():
     user, now = agent_owner(), time.time()
@@ -1417,6 +1457,13 @@ def agent_create_task():
     if provider == "nvidia" and ai_mode() != "promptql":
         return fail("NVIDIA متاح فقط عبر بوابة PromptQL باتصال الزائر الشخصي؛ "
                     "الوضع المستقل يدعم Gemini.", 503, "nvidia_requires_gateway")
+    project_id = data.get("project_id")
+    if project_id:
+        project_id = str(project_id).strip()
+        if not agent_store.get_project(project_id, user):
+            return fail("المشروع غير موجود أو غير متاح لك.", 404, "project_not_found")
+    else:
+        project_id = None
     with connect() as db:
         cooldown_until = active_provider_cooldown(db, provider, user, now)
     if cooldown_until > now:
@@ -1432,7 +1479,8 @@ def agent_create_task():
     # A request-bound task has to finish before the platform freezes it, so the loop's
     # budgets arrive capped -- by policy, not by an `if` in this handler.
     task_id = agent_store.create_task(user, goal, provider, model,
-                                      now + policy.config.DEADLINE_SECONDS, agent_client_key())
+                                      now + policy.config.DEADLINE_SECONDS, agent_client_key(),
+                                      project_id=project_id)
     if policy.is_inline:
         service = Service.for_request(AgentDeps(**agent_deps(
             visitor_token=g.visitor["token"] if policy.uses_request_visitor_token else None,
@@ -1450,7 +1498,11 @@ def agent_list_tasks():
     user = agent_owner()
     if not user:
         return jsonify(tasks=[])
-    return jsonify(tasks=agent_store.list_tasks(user, limit=20))
+    status = request.args.get("status")
+    if status and status not in (TERMINAL_STATUSES + ACTIVE_STATUSES):
+        return fail("حالة المهمة غير صالحة.", 400, "invalid_status")
+    project_id = request.args.get("project_id")
+    return jsonify(tasks=agent_store.list_tasks(user, limit=20, status=status, project_id=project_id))
 
 
 @app.get("/api/agent/tasks/<task_id>")
@@ -1511,14 +1563,36 @@ def agent_approve(task_id):
     if agent_store.get_task(task_id, agent_owner()) is None:
         return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
     data = request.get_json(silent=True) or {}
-    call_id = str(data.get("call_id", ""))
-    approve = bool(data.get("approve", False))
+    call_id = str(data.get("approval_id") or data.get("call_id") or "")
     if not call_id:
         return fail("أرسل معرّف الطلب.")
-    if not agent_service.decide(call_id, approve):
+
+    if "decision" in data:
+        decision = str(data.get("decision", "")).strip().lower()
+        if decision not in ("allow_once", "allow_task", "deny"):
+            return fail("القرار يجب أن يكون allow_once أو allow_task أو deny.")
+    elif "approve" in data:
+        approve = bool(data.get("approve", False))
+        decision = "allow_once" if approve else "deny"
+    else:
+        return fail("أرسل القرار (decision أو approve).")
+
+    if not agent_service.decide(call_id, decision):
         return fail("هذا الطلب لم يعد بانتظار موافقتك (انتهت صلاحيته أو نُفّذ).",
                     409, "approval_stale")
-    return jsonify(ok=True, decision="approved" if approve else "denied")
+    decision_resp = "denied" if decision == "deny" else ("allow_task" if decision == "allow_task" else "approved")
+    return jsonify(ok=True, decision=decision_resp, approval_id=call_id)
+
+
+@app.post("/api/agent/tasks/<task_id>/takeover")
+def agent_task_takeover(task_id):
+    user = agent_owner()
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+    task = agent_store.get_task(task_id, user)
+    if task is None:
+        return fail("المهمة غير موجودة أو غير متاحة لك.", 404, "not_found")
+    return jsonify(error="التحكم التفاعلي بالمتصفح غير مدعوم على هذا الخادم.", code="not_implemented"), 501
 
 
 @app.post("/api/agent/tasks/<task_id>/cancel")
@@ -1545,12 +1619,46 @@ def agent_artifact(artifact_id):
     return jsonify(artifact=artifact)
 
 
+@app.get("/api/agent/artifacts/<int:artifact_id>/versions")
+def agent_artifact_versions(artifact_id):
+    user = agent_owner()
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+    versions = agent_store.get_artifact_versions(artifact_id, user)
+    if versions is None:
+        return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
+    return jsonify(artifact_id=artifact_id, versions=versions)
+
+
 @app.post("/api/agent/artifacts/<int:artifact_id>/delete")
 def agent_artifact_delete(artifact_id):
     user = agent_owner()
     if agent_store.get_artifact(artifact_id, user) is None:
         return fail("الملف غير موجود أو غير متاح لك.", 404, "not_found")
     return jsonify(ok=agent_store.delete_artifact(artifact_id, user))
+
+
+@app.get("/api/agent/connectors")
+def agent_connectors_list():
+    user = agent_owner()
+    if not user:
+        return jsonify(connectors=[])
+    return jsonify(connectors=agent_store.list_connectors(user))
+
+
+@app.patch("/api/agent/connectors/<connector_id>/permissions")
+def agent_connector_update_permissions(connector_id):
+    user = agent_owner()
+    if not user:
+        return fail("سجّل زيارة أولاً.", 401, "sign_in_required")
+    data = request.get_json(silent=True) or {}
+    permissions = data.get("permissions") if "permissions" in data else data
+    if not isinstance(permissions, dict):
+        return fail("الصلاحيات يجب أن تكون كائناً.")
+    updated = agent_store.update_connector_permissions(user, connector_id, permissions)
+    if updated is None:
+        return fail("الموصل غير معروف.", 404, "connector_not_found")
+    return jsonify(ok=True, connector=updated)
 
 
 @app.get("/api/agent/memory")

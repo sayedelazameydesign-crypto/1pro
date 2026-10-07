@@ -61,7 +61,14 @@
           <p class="components-foot" id="components-foot"></p>
         </details>
         <div class="agent-grid">
-          <div class="agent-main">
+          <div class="agent-main" id="agent-main-panel">
+            <div class="agent-mode-bar">
+              <span class="tiny-label">وضع العمل</span>
+              <div class="agent-mode-toggle" role="group" aria-label="تبديل وضع العمل">
+                <button class="mode-btn active" data-mode="agent" type="button"><span data-icon="spark"></span>وكيل المهام</button>
+                <button class="mode-btn" data-mode="chat" type="button"><span data-icon="message"></span>المحادثة المباشرة</button>
+              </div>
+            </div>
             <form id="agent-form" class="agent-composer">
               <label class="sr-only" for="agent-goal">هدفك</label>
               <textarea id="agent-goal" rows="3" maxlength="4000" placeholder="مثال: قارن بين تعلم بايثون و javascript لمدة شهرين، ثم أعطني جدولاً وخطة أسبوعية." required></textarea>
@@ -80,14 +87,50 @@
             <div id="agent-history" class="agent-history"></div>
             <div class="agent-tools-strip"><span class="tiny-label">الأدوات المتاحة الآن</span><div id="agent-tools-list"></div></div>
           </div>
-          <aside class="agent-side">
-            <div class="agent-card">
-              <h3>لوحة العرض</h3>
+          <aside class="agent-side" id="agent-side-panel">
+            <div class="agent-card" id="artifact-card">
+              <div class="artifact-card-head">
+                <h3>لوحة العرض</h3>
+                <div class="artifact-tabs" id="artifact-tabs" role="tablist">
+                  <button class="tab-btn active" data-tab="preview" type="button">معاينة</button>
+                  <button class="tab-btn" data-tab="code" type="button">الكود</button>
+                  <button class="tab-btn" data-tab="files" type="button">الملفات</button>
+                  <button class="tab-btn" data-tab="changes" type="button">التغييرات</button>
+                </div>
+              </div>
               <p class="agent-note">الملفات التي تنتجها المهمة تُعاين داخل إطار معزول؛ السكربت متوقف إلا لو شغّلته بنفسك.</p>
               <div id="agent-artifacts" class="agent-artifacts"></div>
-              <label id="artifact-run-row" class="agent-run-toggle"><input type="checkbox" id="artifact-run"> تشغيل السكربتات في هذه المعاينة</label>
-              <div class="agent-preview"><iframe id="artifact-frame" title="معاينة ناتج الواحة" sandbox=""></iframe></div>
-              <div class="agent-preview-actions"><span id="artifact-name" class="agent-file-name">لم تُختَر ملف</span><button id="artifact-download" class="secondary tiny-btn">تنزيل</button><button id="artifact-copy" class="secondary tiny-btn">نسخ</button></div>
+
+              <div id="tab-pane-preview" class="tab-pane active">
+                <label id="artifact-run-row" class="agent-run-toggle"><input type="checkbox" id="artifact-run"> تشغيل السكربتات في هذه المعاينة</label>
+                <div class="agent-preview"><iframe id="artifact-frame" title="معاينة ناتج الواحة" sandbox=""></iframe></div>
+              </div>
+
+              <div id="tab-pane-code" class="tab-pane hidden">
+                <div class="code-view-container">
+                  <div class="code-version-bar">
+                    <span id="artifact-version-tag" class="tiny-label">الإصدار: v1</span>
+                    <select id="artifact-version-select" class="tiny-select hidden" aria-label="اختر الإصدار"></select>
+                  </div>
+                  <pre id="artifact-code-view" class="code-box ltr" dir="ltr"><code>لم يُختر ملف بعد.</code></pre>
+                </div>
+              </div>
+
+              <div id="tab-pane-files" class="tab-pane hidden">
+                <ul id="artifact-files-list" class="artifact-files-list"></ul>
+              </div>
+
+              <div id="tab-pane-changes" class="tab-pane hidden">
+                <div id="artifact-changes-view" class="changes-view ltr" dir="ltr">
+                  <p class="agent-empty">لا تغييرات مسجلة.</p>
+                </div>
+              </div>
+
+              <div class="agent-preview-actions">
+                <span id="artifact-name" class="agent-file-name ltr" dir="ltr">لم تُختَر ملف</span>
+                <button id="artifact-download" class="secondary tiny-btn" type="button">تنزيل</button>
+                <button id="artifact-copy" class="secondary tiny-btn" type="button">نسخ</button>
+              </div>
             </div>
             <div class="agent-card">
               <h3>ذاكرة الواحة</h3>
@@ -97,6 +140,12 @@
             </div>
           </aside>
         </div>
+        <nav class="mobile-sheet-nav" id="mobile-sheet-nav" aria-label="تبويب الهاتف">
+          <button class="sheet-tab active" data-sheet="tasks" type="button"><span data-icon="spark"></span>المهام</button>
+          <button class="sheet-tab" data-sheet="steps" type="button"><span data-icon="compass"></span>الخطوات</button>
+          <button class="sheet-tab" data-sheet="files" type="button"><span data-icon="book"></span>الملفات</button>
+          <button class="sheet-tab" data-sheet="artifact" type="button"><span data-icon="layers"></span>المعاينة</button>
+        </nav>
         <div class="bottom-note"><span data-icon="shield"></span><p>لا يشغّل خادم الواحة كوداً ولا يفتح ملفات على جهازك، ولا يتصل بمواقع خارجية إلا بعد موافقتك في كل مرة.<br><span>الأدوات شبكة محدودة ومفتوحة المصدر؛ لا تعتبرها بديلاً من بيئة تنفيذ حقيقية.</span></p></div>
       </section>
       <section id="conversation-view" class="hidden">

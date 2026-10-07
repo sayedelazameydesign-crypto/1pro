@@ -308,6 +308,8 @@ class Agent:
             return json.dumps({"error": str(error)}, ensure_ascii=False), False
         needs_approval = tool.requires_approval and not (
             config.AUTO_APPROVE_READ_ONLY and tool.read_only and not tool.network)
+        if needs_approval and store.is_tool_allowed_for_task(task_id, tool_name):
+            needs_approval = False
         if needs_approval and self.deps.inline:
             call_id = store.create_call(task_id, step_id, tool_name, args, True)
             store.note_usage(task_id, tool_calls=1)

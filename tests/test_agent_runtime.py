@@ -648,6 +648,166 @@ class AgentCase(unittest.TestCase):
         self.assertEqual(backend.agent_store.task_status(task_id), "interrupted")
         self.assertEqual(backend.agent_store.get_task(task_id)["error_code"], "interrupted")
 
+    def test_projects_crud_isolation_and_task_linkage(self):
+        resp = self.client.post("/api/agent/projects",
+                                data=json.dumps({"name": "مشروع بايثون", "instructions": "تعليمات خاصة", "context": "سياق المشروع"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 201)
+        proj = resp.get_json()["project"]
+        self.assertEqual(proj["name"], "مشروع بايثون")
+        proj_id = proj["id"]
+
+        resp = self.client.get("/api/agent/projects", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        projects = resp.get_json()["projects"]
+        self.assertTrue(any(p["id"] == proj_id for p in projects))
+
+        self.use_script([plan(["احسب"]), action("calculator", expression="5+5"), final("10"), final("r")])
+        resp = self.create(goal="احسب خمسة زائد خمسة", project_id=proj_id)
+        self.assertEqual(resp.status_code, 201)
+        task_id = resp.get_json()["task"]["id"]
+        self.assertEqual(resp.get_json()["task"]["project_id"], proj_id)
+        self.wait(task_id)
+
+        resp = self.client.get(f"/api/agent/projects/{proj_id}", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        detail = resp.get_json()
+        self.assertEqual(detail["project"]["id"], proj_id)
+        self.assertEqual(len(detail["tasks"]), 1)
+        self.assertEqual(detail["tasks"][0]["id"], task_id)
+
+        other = "u_" + os.urandom(10).hex()
+        other_headers = {"Origin": ORIGIN, "X-PromptQL-Visitor-Token": identity(other),
+                         "X-Waha-CSRF": backend.csrf_for(other), "Content-Type": "application/json"}
+        self.assertEqual(self.client.get(f"/api/agent/projects/{proj_id}", headers=other_headers).status_code, 404)
+        resp_bad = self.client.post("/api/agent/tasks",
+                                    data=json.dumps({"goal": "هدف مستخدم آخر", "project_id": proj_id}),
+                                    headers=other_headers)
+        self.assertEqual(resp_bad.status_code, 404)
+
+    def test_task_history_filters(self):
+        self.use_script([plan(["احسب"]), action("calculator", expression="2*2"), final("4"), final("r")])
+        t1 = self.create(goal="مهمة مكتملة أرقام").get_json()["task"]["id"]
+        self.wait(t1)
+
+        resp = self.client.get("/api/agent/tasks?status=completed", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        tasks = resp.get_json()["tasks"]
+        self.assertTrue(all(t["status"] == "completed" for t in tasks))
+        self.assertTrue(any(t["id"] == t1 for t in tasks))
+
+        resp = self.client.get("/api/agent/tasks?status=running", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(any(t["id"] == t1 for t in resp.get_json()["tasks"]))
+
+        resp = self.client.get("/api/agent/tasks?status=invalid_status", headers=self.headers())
+        self.assertEqual(resp.status_code, 400)
+
+    def test_typed_events_and_data_fields(self):
+        self.use_script([plan(["احسب"]), action("calculator", expression="7+7"), final("14"), final("r")])
+        task_id = self.create(goal="احسب سبعة زائد سبعة").get_json()["task"]["id"]
+        self.wait(task_id)
+
+        resp = self.client.get(f"/api/agent/tasks/{task_id}/events", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        events = resp.get_json()["events"]
+        event_types = [e["type"] for e in events]
+        self.assertIn("step.started", event_types)
+        self.assertIn("step.completed", event_types)
+        self.assertIn("tool.requested", event_types)
+        self.assertIn("tool.result", event_types)
+        for e in events:
+            self.assertIn("ts", e)
+            self.assertIn("data", e)
+            self.assertEqual(e["data"], e["payload"])
+            self.assertEqual(e["task_id"], task_id)
+
+    def test_approval_scopes_and_task_allowance(self):
+        task_id = backend.agent_store.create_task(self.user, "هدف موافقة تجريبي", "gemini", "model", time.time() + 60)
+        call_id = backend.agent_store.create_call(task_id, 1, "web_fetch", {"url": "https://example.com"}, True)
+
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/approve",
+                                data=json.dumps({"approval_id": call_id, "decision": "allow_once"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+        self.assertEqual(resp.get_json()["decision"], "approved")
+
+        task_id2 = backend.agent_store.create_task(self.user, "هدف ثانٍ للموافقة", "gemini", "model", time.time() + 60)
+        call_id2 = backend.agent_store.create_call(task_id2, 1, "web_fetch", {"url": "https://example.com"}, True)
+        resp = self.client.post(f"/api/agent/tasks/{task_id2}/approve",
+                                data=json.dumps({"call_id": call_id2, "decision": "allow_task"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["decision"], "allow_task")
+        self.assertTrue(backend.agent_store.is_tool_allowed_for_task(task_id2, "web_fetch"))
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id2, "other_tool"))
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id, "web_fetch"))
+        backend.agent_store.clear_task_allowances(task_id2)
+        self.assertFalse(backend.agent_store.is_tool_allowed_for_task(task_id2, "web_fetch"))
+
+        task_id3 = backend.agent_store.create_task(self.user, "هدف ثالث للرفض", "gemini", "model", time.time() + 60)
+        call_id3 = backend.agent_store.create_call(task_id3, 1, "web_fetch", {"url": "https://example.com"}, True)
+        resp = self.client.post(f"/api/agent/tasks/{task_id3}/approve",
+                                data=json.dumps({"approval_id": call_id3, "decision": "deny"}),
+                                headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["decision"], "denied")
+
+    def test_artifact_versions(self):
+        task_id = backend.agent_store.create_task(self.user, "مهمة ملفات تجريبية", "gemini", "model", time.time() + 60)
+        art_id = backend.agent_store.put_artifact(task_id, self.user, "test.html", "html", "<h1>v1</h1>")
+        art_id2 = backend.agent_store.put_artifact(task_id, self.user, "test.html", "html", "<h1>v2</h1>")
+        self.assertEqual(art_id, art_id2)
+
+        resp = self.client.get(f"/api/agent/artifacts/{art_id}", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        art = resp.get_json()["artifact"]
+        self.assertEqual(art["version"], 2)
+        self.assertEqual(art["content"], "<h1>v2</h1>")
+        self.assertEqual(art["parent_version"], 1)
+
+        resp = self.client.get(f"/api/agent/artifacts/{art_id}/versions", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        versions = resp.get_json()["versions"]
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(versions[0]["version"], 2)
+        self.assertEqual(versions[1]["version"], 1)
+
+    def test_connectors_and_permissions(self):
+        resp = self.client.get("/api/agent/connectors", headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        conns = resp.get_json()["connectors"]
+        self.assertTrue(len(conns) >= 3)
+        github_conn = next(c for c in conns if c["id"] == "github")
+        self.assertFalse(github_conn["permissions"]["files"])
+
+        resp = self.client.patch("/api/agent/connectors/github/permissions",
+                                 data=json.dumps({"permissions": {"files": True, "messages": False, "external_actions": True}}),
+                                 headers=self.headers())
+        self.assertEqual(resp.status_code, 200)
+        updated = resp.get_json()["connector"]
+        self.assertTrue(updated["permissions"]["files"])
+        self.assertTrue(updated["permissions"]["external_actions"])
+        self.assertFalse(updated["permissions"]["messages"])
+
+        resp = self.client.patch("/api/agent/connectors/unknown_conn/permissions",
+                                 data=json.dumps({"files": True}),
+                                 headers=self.headers())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_browser_takeover_stub(self):
+        task_id = backend.agent_store.create_task(self.user, "مهمة تحكم متصفح", "gemini", "model", time.time() + 60)
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/takeover", headers=self.headers())
+        self.assertEqual(resp.status_code, 501)
+        self.assertEqual(resp.get_json()["code"], "not_implemented")
+
+        other = "u_" + os.urandom(10).hex()
+        other_headers = {"Origin": ORIGIN, "X-PromptQL-Visitor-Token": identity(other),
+                         "X-Waha-CSRF": backend.csrf_for(other), "Content-Type": "application/json"}
+        resp = self.client.post(f"/api/agent/tasks/{task_id}/takeover", headers=other_headers)
+        self.assertEqual(resp.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

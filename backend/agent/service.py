@@ -143,14 +143,15 @@ class Service:
         store.complete_call(call_id, error="انتهت مهلة الموافقة، ولم تُنفَّذ الأداة.", status="expired")
         return "timeout"
 
-    def decide(self, call_id, approve):
-        """Called from the HTTP request carrying the human answer."""
-        if not self.deps.store.decide_call(call_id, approve):
+    def decide(self, call_id, decision):
+        """Called from the HTTP request carrying the human answer (bool or allow_once|allow_task|deny)."""
+        if not self.deps.store.decide_call(call_id, decision):
             return False
+        is_approved = decision is True or decision in ("allow_once", "allow_task", "approved")
         with self._lock:
             record = self._approvals.get(call_id)
             if record is not None:
-                record["decision"] = "approved" if approve else "denied"
+                record["decision"] = "approved" if is_approved else "denied"
                 record["event"].set()
         return True
 
