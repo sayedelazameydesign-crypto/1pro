@@ -64,6 +64,12 @@ DATABASE_ALIASES=(DATABASE_URL NEON_DATABASE_URL DATABASE_PRIVATE_URL POSTGRES_U
 GEMINI_ALIASES=(GEMINI_API_KEY GOOGLE_API_KEY GEMINI_KEY GOOGLE_AI_KEY GEMINI_TOKEN
                 GOOGLE_GENERATIVE_AI_API_KEY)
 SECRET_ALIASES=(WAHA_SECRET WAHA_APP_SECRET APP_SECRET FLASK_SECRET WAHA_CSRF_SECRET)
+# Vercel Marketplace: the OAuth pair of the integration we publish. The secret signs
+# every webhook and is exchanged for the install token, so it is aliased and redacted
+# exactly like the other credentials rather than typed in by hand at the end.
+MP_ID_ALIASES=(VERCEL_INTEGRATION_CLIENT_ID VERCEL_INTEGRATION_ID INTEGRATION_CLIENT_ID)
+MP_SECRET_ALIASES=(VERCEL_INTEGRATION_CLIENT_SECRET VERCEL_INTEGRATION_SECRET
+                   INTEGRATION_CLIENT_SECRET)
 ORIGIN_ALIASES=(WAHA_ALLOWED_ORIGINS ALLOWED_ORIGINS WAHA_ORIGINS CORS_ORIGINS)
 TOKEN_ALIASES=(VERCEL_TOKEN VERCEL_API_TOKEN VERCEL_ACCESS_TOKEN)
 
@@ -423,7 +429,20 @@ else
   echo "VERCEL_PROJECT_ID    missing  -> looking up project \"$PROJECT_NAME\" by name"
 fi
 if resolve VERCEL_TEAM_ID VERCEL_TEAM_ID; then
-  echo "VERCEL_TEAM_ID       present  <- secret \"$RESOLVED_FROM\""
+  if resolve VERCEL_INTEGRATION_CLIENT_ID "${MP_ID_ALIASES[@]}"; then
+  echo "VERCEL_INTEGRATION_CLIENT_ID present  <- secret \"$RESOLVED_FROM\"$(dupes_note "$RESOLVED_FROM")"
+else
+  echo "VERCEL_INTEGRATION_CLIENT_ID absent  -> Marketplace stays off; the /v1 routes answer 503"
+fi
+if resolve VERCEL_INTEGRATION_CLIENT_SECRET "${MP_SECRET_ALIASES[@]}"; then
+  echo "VERCEL_INTEGRATION_CLIENT_SECRET present  <- secret \"$RESOLVED_FROM\"$(dupes_note "$RESOLVED_FROM")"
+else
+  echo "VERCEL_INTEGRATION_CLIENT_SECRET absent  -> Marketplace stays off; the /v1 routes answer 503"
+fi
+if [ -n "${VERCEL_INTEGRATION_CLIENT_ID:-}" ] && [ -z "${VERCEL_INTEGRATION_CLIENT_SECRET:-}" ]; then
+  bad "Marketplace is half configured: the id is present and the secret is not, so every install fails with a 403 that blames the customer"
+fi
+echo "VERCEL_TEAM_ID       present  <- secret \"$RESOLVED_FROM\""
 else
   echo "VERCEL_TEAM_ID       missing  -> looking up team \"$TEAM_SLUG\" by slug"
 fi
@@ -678,6 +697,8 @@ print(json.dumps({"key": os.environ["K"], "value": os.environ["V"],
 have "$DATABASE_URL" && push_var DATABASE_URL "$DATABASE_URL"
 have "$GEMINI_API_KEY" && push_var GEMINI_API_KEY "$GEMINI_API_KEY"
 have "$WAHA_SECRET" && push_var WAHA_SECRET "$WAHA_SECRET"
+have "${VERCEL_INTEGRATION_CLIENT_ID:-}" && push_var VERCEL_INTEGRATION_CLIENT_ID "$VERCEL_INTEGRATION_CLIENT_ID"
+have "${VERCEL_INTEGRATION_CLIENT_SECRET:-}" && push_var VERCEL_INTEGRATION_CLIENT_SECRET "$VERCEL_INTEGRATION_CLIENT_SECRET"
 push_var WAHA_ALLOWED_ORIGINS "$WAHA_ALLOWED_ORIGINS"
 echo
 

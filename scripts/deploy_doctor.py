@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "backend") not in sys.path:
     sys.path.insert(0, str(ROOT / "backend"))
 from integrations.config import configured_trusted_hosts, normalize_hostname, normalize_origin  # noqa: E402
+from marketplace import config as marketplace_config  # noqa: E402
 PAGES_ORIGIN = "https://sayedelazameydesign-crypto.github.io"
 # NB: no empty string here — "" is a substring of everything and would flag
 # every real key. Missing values are handled by the length check above.
@@ -264,6 +265,52 @@ def check(env, target="render", vercel_path=None):
                             "نطاق الفريق، أما المعرّف فيعمل دائمًا (Vercel → Project → "
                             "Settings → Project ID).")
 
+    # 5c) Vercel Marketplace. Checked only when at least one variable names it:
+    # this surface is off by default, so an operator who never created the
+    # integration must not inherit four new errors. Once it is named, though, the
+    # two failures worth catching here are both silent in production -- a
+    # half-present OAuth pair (every install 403s with a message blaming the
+    # customer) and a Redirect URL on a different host from the Base URL (the
+    # code exchange is compared byte for byte at Vercel, and its 403 names
+    # neither value).
+    mp_id = env.get("VERCEL_INTEGRATION_CLIENT_ID", "").strip()
+    mp_secret = env.get("VERCEL_INTEGRATION_CLIENT_SECRET", "").strip()
+    mp_base = env.get("WAHA_MARKETPLACE_BASE_URL", "").strip()
+    mp_redirect = env.get("WAHA_MARKETPLACE_REDIRECT_URL", "").strip()
+    if mp_id or mp_secret:
+        if bool(mp_id) != bool(mp_secret):
+            errors.append("تكامل Vercel Marketplace نصف مُهيّأ: يجب ضبط "
+                          "VERCEL_INTEGRATION_CLIENT_ID وVERCEL_INTEGRATION_CLIENT_SECRET معاً؛ "
+                          "بنصفهما يفشل كل تثبيت بـ403 يوجّه اللوم إلى العميل لا إلى الإعداد.")
+        else:
+            if not mp_id.startswith("oac_"):
+                warnings.append("VERCEL_INTEGRATION_CLIENT_ID لا يبدأ بـ`oac_`؛ القيمة الصحيحة "
+                                "هي Integration ID من Integrations Console، لا الاسم ولا الـslug.")
+            if _looks_placeholder(mp_secret) or len(mp_secret) < 24:
+                errors.append("VERCEL_INTEGRATION_CLIENT_SECRET قصير أو وهمي: يُوقَّع به كل "
+                              "ويب هوك ويُستبدل به رمز التثبيت، فاجعله سرّاً عشوائياً طويلاً.")
+            if not mp_base:
+                errors.append("WAHA_MARKETPLACE_BASE_URL غير مضبوط: بدونه يُحقن "
+                              f"`{marketplace_config.DEFAULT_ENV_PREFIX}_API_BASE` فارغاً في "
+                              "مشاريع العملاء، فيفشل أول نداء من مشروعهم بلا سبب ظاهر.")
+            else:
+                base_parts = urlsplit(mp_base)
+                base_host = normalize_hostname(base_parts.hostname)
+                if base_parts.scheme.lower() != "https" or not base_host:
+                    errors.append("WAHA_MARKETPLACE_BASE_URL يجب أن يكون رابط HTTPS كاملاً؛ "
+                                  "يُحقن كما هو في متغيرات بيئة مشاريع العملاء.")
+                elif _is_private_or_local_host(base_host):
+                    errors.append("WAHA_MARKETPLACE_BASE_URL يشير إلى localhost أو عنوان خاص؛ "
+                                  "لن تصل إليه مشاريع العملاء على Vercel.")
+            if mp_redirect and mp_base and not marketplace_config.same_host(mp_redirect, mp_base):
+                errors.append("WAHA_MARKETPLACE_REDIRECT_URL على مضيف غير مضيف "
+                              "WAHA_MARKETPLACE_BASE_URL: Vercel يقارن redirect_uri في تبادل "
+                              "الرمز بقيمة Redirect URL في الـConsole حرفياً، و403 الناتج لا "
+                              "يسمّي أيًّا من القيمتين.")
+            elif mp_id and not mp_redirect:
+                warnings.append("WAHA_MARKETPLACE_REDIRECT_URL غير مضبوط: مسار التثبيت يمرّ "
+                                "على القيمة الافتراضية وقد لا يطابق ما سُجّل في الـConsole.")
+
     # 6) The static front door's pointer to the API.
     config_path = ROOT / "docs" / "data" / "config.json"
     api_base = ""
@@ -457,6 +504,26 @@ def self_test():
         ("shapes that are right", dict(good, VERCEL_TEAM_ID="team_KaDefEE8HBoecXfntoJUw2TZ",
                                        VERCEL_PROJECT_ID="prj_2qy6p3q63at2AZerXZHIxUX3GpJf"),
          None, True),
+        # Vercel Marketplace: off by default, so an untouched deployment stays clean,
+        # and once named it must be named in full.
+        ("marketplace untouched", good, None, True),
+        ("marketplace half configured",
+         dict(good, VERCEL_INTEGRATION_CLIENT_ID="oac_9f4YG9JFjgKkRlxoaaGG0y05"), None, False),
+        ("marketplace without a base url",
+         dict(good, VERCEL_INTEGRATION_CLIENT_ID="oac_9f4YG9JFjgKkRlxoaaGG0y05",
+              VERCEL_INTEGRATION_CLIENT_SECRET="s" * 40), None, False),
+        ("marketplace redirect on another host",
+         dict(good, VERCEL_INTEGRATION_CLIENT_ID="oac_9f4YG9JFjgKkRlxoaaGG0y05",
+              VERCEL_INTEGRATION_CLIENT_SECRET="s" * 40,
+              WAHA_MARKETPLACE_BASE_URL="https://waha.example.onrender.com",
+              WAHA_MARKETPLACE_REDIRECT_URL="https://other.example/marketplace/configure"),
+         None, False),
+        ("marketplace fully configured",
+         dict(good, VERCEL_INTEGRATION_CLIENT_ID="oac_9f4YG9JFjgKkRlxoaaGG0y05",
+              VERCEL_INTEGRATION_CLIENT_SECRET="s" * 40,
+              WAHA_MARKETPLACE_BASE_URL="https://waha.example.onrender.com",
+              WAHA_MARKETPLACE_REDIRECT_URL="https://waha.example.onrender.com"
+                                            "/marketplace/configure"), None, True),
     ]
     failures = []
     for label, env, _expected, should_pass in cases:

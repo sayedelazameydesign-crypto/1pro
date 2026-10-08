@@ -204,15 +204,29 @@ content=?`) — لا لقطة سابقة. و`C34` أنواعها خمسة، فل
 | C87 | نشر مزدوج (خلفي/واجهة) | ✅ | ✅ | Implemented | `file:render.yaml`, `file:vercel.json` | P1 |
 | C88 | مدقّق نشر قبل الدفع | ◐ | ◐ | Implemented | `file:scripts/deploy_doctor.py` | P2 |
 | C89 | مراقبة إنتاجية دورية | ◐ | ◐ | Partial | `file:.github/workflows/prod-probe.yml` | P2 |
+| C90 | تثبيت OAuth2 من متجر Vercel (تبادل رمز التثبيت) | ✅ | ◐ | Implemented | `file:backend/marketplace/client.py`, `knob:MARKETPLACE_CONFIG` | P1 |
+| C91 | تحقّق من توقيع توكنات Vercel (RS256 عبر JWKS) | ✅ | ❌ | Implemented | `file:backend/marketplace/crypto.py` | P0 |
+| C92 | ويب هوك موقّع (HMAC) ومُسجَّل مرة واحدة | ✅ | ◐ | Implemented | `file:backend/marketplace/store.py` | P0 |
+| C93 | توفير مورد وحقن متغيرات بيئة في مشروع العميل | ✅ | ◐ | Implemented | `file:backend/marketplace/service.py` | P0 |
+| C94 | تدوير رمز المورد مع إبطال فعلي للقديم | ✅ | ❌ | Implemented | `file:backend/marketplace/store.py` | P0 |
+| C95 | لوحة موارد عربية RTL بلا أي سرّ معروض | ✅ | ◐ | Implemented | `file:backend/marketplace/views.py`, `file:backend/static/marketplace.css` | P2 |
+| C96 | الفوترة عبر Vercel (خطط مدفوعة وفواتير) | ✅ | ✅ | Missing | — | P2 |
+| C97 | استيراد موارد قائمة وفحوص النشر | ◐ | ❌ | Missing | — | P2 |
 
 `C83` جزئية لسبب دقيق: المسار موجود في الخادم، لكن الواجهة **تستطلع** كل ١٫٦ ثانية بدل
 أن تستهلك SSE. `C81` جزئية لأن التحصين تعليمات نظام لا صندوق رمل.
+
+`C90`–`C95` هي تكامل متجر Vercel بصفة **مزوّد** (provider): Vercel ينادينا لا نناديها.
+`C91` مُعلَنة Implemented لا Partial لأن التحقّق يجري على مفاتيح حقيقية من JWKS بموجّهات
+اختبار من OpenSSL، لا على محاكاة. `C96` و`C97` مفقودتان لا «مؤجّلتان»: الفوترة تحتاج
+قبولًا في برنامج الشركاء ومسارات فواتير لم تُكتب، واستيراد الموارد وفحوص النشر لم
+تُنفَّذ — ولذلك خطة الفوترة الوحيدة المُعلَنة مجّانية وتقول ذلك صراحةً.
 
 ---
 
 ## الإجمالي
 
-الإجمالي: 89 قدرة — Implemented 46 · Partial 6 · Missing 36 · Mocked 1
+الإجمالي: 97 قدرة — Implemented 52 · Partial 6 · Missing 38 · Mocked 1
 
 **للقراءة الصريحة:** النواة والحكم والتخزين مبنية بجدية (`C01`–`C07`, `C51`–`C54`,
 `C77`–`C80`). والفجوة ليست في الذكاء ولا في الحلقة، بل في **الأفعال**: لا متصفح ولا كود

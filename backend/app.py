@@ -12,9 +12,10 @@ import uuid
 import socket
 import urllib.request
 import urllib.error
+from urllib.parse import quote, urlsplit
 from pathlib import Path
 
-from flask import Flask, g, jsonify, request, send_file
+from flask import Flask, g, jsonify, redirect, request, send_file
 from werkzeug.exceptions import SecurityError
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +46,18 @@ from agent.tools import build_registry          # noqa: E402
 import integrations.config as integrations_config      # noqa: E402
 from integrations import IntegrationService            # noqa: E402
 from integrations.http import IntegrationError         # noqa: E402
+from integrations.redact import build_redactor         # noqa: E402
+# Vercel Marketplace: the provider surface Vercel calls. Same conventions as
+# `integrations/` -- injected transport, frozen config, redacted messages -- but
+# a different caller, so it is a different package rather than a new module in
+# that one.
+import marketplace.config as marketplace_config        # noqa: E402
+from marketplace import (MarketplaceClient, MarketplaceService,  # noqa: E402
+                         MarketplaceStore)
+from marketplace.client import jwks_fetcher            # noqa: E402
+from marketplace.crypto import JwksCache               # noqa: E402
+from marketplace.errors import MarketplaceError        # noqa: E402
+from marketplace.views import render_dashboard, render_message  # noqa: E402
 
 # --- Deployment configuration -------------------------------------------------
 # Standalone mode (e.g. Render): set DATABASE_URL, GEMINI_API_KEY, WAHA_SECRET,
@@ -383,6 +396,102 @@ agent_store = Store(AgentDB())
 agent_tools = build_registry()
 
 
+# --- Marketplace credentials -------------------------------------------------
+# A provisioned workspace is a real Waha identity, so the token injected into a
+# customer's project already works against every /api route the visitor path
+# guards. It cannot simply reuse the visitor token, though: that one is scoped to
+# 400 days, which is right for a browser a person can re-register and wrong for a
+# value baked into someone else's environment variables -- there, expiry is an
+# outage in a project we do not own and cannot warn. So workspaces get their own
+# prefix, their own much longer TTL, and rotation as the way to revoke.
+MARKETPLACE_TOKEN_TTL_SECONDS = 5 * 365 * 86400
+# The same shape `verify_token` accepts, so one identity table serves both.
+MARKETPLACE_ID_PATTERN = r"u_[0-9a-f]{20}"
+
+
+def issue_workspace_token(workspace_id, now=None):
+    """Mint a workspace token, always different from the one before it.
+
+    The nonce is not decoration. A rotation keeps the workspace id and is
+    usually triggered within the same second as the last mint, so a token
+    derived from ``(workspace_id, issued)`` alone is *the same token* -- a
+    rotation that changes nothing, which is worse than no rotation because the
+    operator is told it worked. Baking a random value into what gets signed is
+    what makes every issuance a new credential.
+
+    Five segments rather than the visitor token's four, so the two kinds can
+    never be parsed as each other even if a prefix check is later removed.
+    """
+    issued = int(now if now is not None else time.time())
+    nonce = secrets.token_hex(8)
+    signature = hmac.new(WAHA_SECRET.encode(),
+                         f"waha-wsp|{workspace_id}|{issued}|{nonce}".encode(),
+                         hashlib.sha256).hexdigest()
+    return f"waha-wsp.{workspace_id}.{issued}.{nonce}.{signature}"
+
+
+def verify_workspace_token(token):
+    parts = str(token or "").split(".")
+    if len(parts) != 5 or parts[0] != "waha-wsp":
+        return None
+    workspace_id, issued_raw, nonce, signature = parts[1], parts[2], parts[3], parts[4]
+    if not re.fullmatch(MARKETPLACE_ID_PATTERN, workspace_id):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{16}", nonce):
+        return None
+    try:
+        issued = int(issued_raw)
+    except ValueError:
+        return None
+    now = time.time()
+    if issued > now + 60 or issued < now - MARKETPLACE_TOKEN_TTL_SECONDS:
+        return None
+    expected = hmac.new(WAHA_SECRET.encode(),
+                        f"waha-wsp|{workspace_id}|{issued}|{nonce}".encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    # The signature proves *we* minted it once. It cannot prove we have not
+    # replaced it since, because a stateless token carries no revocation -- and a
+    # rotation that leaves the old credential working is worse than none, since
+    # the operator is told it succeeded. So the stored value decides: the row the
+    # token was minted for is the only thing that knows which one is current.
+    try:
+        stored = marketplace_store.token_for_workspace(workspace_id)
+    except Exception:  # pragma: no cover - depends on the engine
+        return None
+    if not stored or not hmac.compare_digest(stored, token):
+        return None
+    return workspace_id
+
+
+def marketplace_credentials(workspace_id=None):
+    """``(workspace_id, api_token)`` for one provisioned resource.
+
+    Called with an existing id by rotation, and with none by provisioning. The
+    id is re-validated rather than trusted because rotation passes in a value
+    that came out of the database.
+    """
+    identifier = workspace_id if (workspace_id and re.fullmatch(
+        MARKETPLACE_ID_PATTERN, str(workspace_id))) else "u_" + secrets.token_hex(10)
+    return identifier, issue_workspace_token(identifier)
+
+
+# --- Vercel Marketplace wiring -----------------------------------------------
+MARKETPLACE_CONFIG = marketplace_config.load()
+marketplace_store = MarketplaceStore(AgentDB())
+MARKETPLACE = MarketplaceService(
+    settings=MARKETPLACE_CONFIG,
+    store=marketplace_store,
+    client=MarketplaceClient(MARKETPLACE_CONFIG,
+                             build_redactor(MARKETPLACE_CONFIG.secrets()),
+                             timeout=MARKETPLACE_CONFIG.timeout_seconds),
+    jwks=JwksCache(MARKETPLACE_CONFIG.jwks_url, jwks_fetcher),
+    session_secret=WAHA_SECRET,
+    credential_factory=marketplace_credentials,
+)
+
+
 # Local/demo mode only: `AGENT_FAKE=1` with no real credentials lets the UI (and
 # `scripts/smoke.sh`) walk the whole agent flow without a Gemini key or any
 # outbound call. Answers are canned and labelled as a demo, and the flag never
@@ -547,8 +656,25 @@ def initialize_agent():
     return agent_service.bootstrap()
 
 
+def initialize_marketplace():
+    """Additive marketplace schema, and a failure here is not a boot failure.
+
+    The chat tables are load-bearing for every request; the marketplace ones are
+    not. An operator who has not created the Vercel integration yet still needs
+    Waha to start, so a database problem is logged and reported through
+    ``/api/owner/marketplace`` instead of taking the process down at import.
+    """
+    try:
+        marketplace_store.ensure_schema()
+    except Exception as error:  # pragma: no cover - depends on the engine
+        app.logger.warning("marketplace schema not created: %s", error)
+        return False
+    return True
+
+
 initialize()
 initialize_agent()
+initialize_marketplace()
 
 
 def fail(message, status=400, code="invalid_request"):
@@ -595,6 +721,13 @@ def identity():
         user_id = verify_token(token)
         if user_id:
             return {"id": user_id, "name": "مستخدم واحة", "token": token, "kind": "waha"}
+        # A workspace token from a Vercel Marketplace resource. Same identity
+        # table, different TTL and prefix, checked second so a visitor token is
+        # never accidentally parsed as one.
+        workspace_id = verify_workspace_token(token)
+        if workspace_id:
+            return {"id": workspace_id, "name": "مساحة عمل واحة", "token": token,
+                    "kind": "workspace"}
     promptql_token = request.headers.get("X-PromptQL-Visitor-Token", "")
     if promptql_token and TRUST_PROMPTQL:
         # SECURITY: only exp/sub are read; there is deliberately no signature
@@ -1812,6 +1945,285 @@ def owner_vercel_deploy_hook():
         return jsonify(INTEGRATIONS.vercel_deploy()), 202
     except IntegrationError as error:
         return integration_error_response(error)
+
+
+# --- Vercel Marketplace: provider API ----------------------------------------
+# Called by Vercel, not by a browser, on the paths it appends to the integration's
+# Base URL. Three rules are enforced in this block rather than in the package,
+# because all three are HTTP-facing decisions:
+#
+#   * authenticate before parsing -- a request that cannot prove who it is never
+#     gets its body read;
+#   * the installation claim must equal the installation in the path;
+#   * every refusal is rendered in Vercel's own envelope,
+#     {"error": {"code", "message", "fields"}}, because that is the only shape
+#     the dashboard reads. A plain {"error": "..."} leaves the customer looking
+#     at a spinner that never resolves.
+
+def marketplace_error_response(error):
+    body = jsonify(error.describe())
+    if error.retry_after is not None:
+        body.headers["Retry-After"] = str(error.retry_after)
+    return body, error.status
+
+
+def marketplace_claims(installation_id=None):
+    """Verify one Partner API call. Returns ``(claims, error_response_or_None)``."""
+    try:
+        claims = MARKETPLACE.authenticate(request.headers.get("Authorization"))
+        if installation_id is not None:
+            MarketplaceService.require_installation(claims, installation_id)
+        return claims, None
+    except MarketplaceError as error:
+        return None, marketplace_error_response(error)
+
+
+def marketplace_safe_target(url):
+    """Only Vercel's own dashboard may receive the browser when we are done.
+
+    ``next`` arrives as a query parameter, so it is caller-controlled in the
+    sense that anyone can build a link containing one. Redirecting to it
+    unchecked would turn an endpoint Vercel sends every installing customer to
+    into an open redirect.
+    """
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    if host != "vercel.com" and not host.endswith(".vercel.com"):
+        return None
+    return str(url)
+
+
+@app.put(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>")
+def marketplace_install(installation_id):
+    """Upsert Installation. Vercel calls this on install and on every scope change."""
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        MARKETPLACE.upsert_installation(installation_id,
+                                        request.get_json(silent=True) or {}, claims)
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+    return jsonify({}), 201
+
+
+@app.get(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>/plans")
+def marketplace_installation_plans(installation_id):
+    """Billing plans for one installation, re-read on every change in the modal."""
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(MARKETPLACE.installation_plans(installation_id))
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+
+
+@app.get(f"{marketplace_config.PARTNER_PREFIX}/products/<product_id>/plans")
+def marketplace_product_plans(product_id):
+    _, blocked = marketplace_claims()
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(MARKETPLACE.product_plans(product_id))
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+
+
+@app.get(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>/resources")
+def marketplace_resources(installation_id):
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        ids = [value for value in request.args.getlist("ids") if value][:100] or None
+        return jsonify(MARKETPLACE.list_resources(installation_id, claims, ids))
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+
+
+@app.post(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>/resources")
+def marketplace_provision(installation_id):
+    """Provision one workspace and return the credentials Vercel injects."""
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        resource = MARKETPLACE.provision_resource(installation_id,
+                                                  request.get_json(silent=True) or {}, claims)
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+    return jsonify(resource), 201
+
+
+@app.get(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>"
+         "/resources/<resource_id>")
+def marketplace_resource(installation_id, resource_id):
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(MARKETPLACE.get_resource(installation_id, resource_id, claims))
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+
+
+@app.patch(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>"
+           "/resources/<resource_id>")
+def marketplace_update_resource(installation_id, resource_id):
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(MARKETPLACE.update_resource(installation_id, resource_id,
+                                                   request.get_json(silent=True) or {},
+                                                   claims))
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+
+
+@app.delete(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>"
+            "/resources/<resource_id>")
+def marketplace_delete_resource(installation_id, resource_id):
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        MARKETPLACE.delete_resource(installation_id, resource_id, claims)
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+    return "", 204
+
+
+@app.post(f"{marketplace_config.PARTNER_PREFIX}/installations/<installation_id>"
+          "/resources/<resource_id>/secrets/rotate")
+def marketplace_rotate_secrets(installation_id, resource_id):
+    """Mint a new API token. 200 when Vercel already has it, 202 when it will."""
+    claims, blocked = marketplace_claims(installation_id)
+    if blocked is not None:
+        return blocked
+    try:
+        response, status = MARKETPLACE.rotate_secrets(installation_id, resource_id, claims)
+    except MarketplaceError as error:
+        return marketplace_error_response(error)
+    return jsonify(response), status
+
+
+# The app-wide body cap is 24 KB, which is right for a chat message and small for
+# a Vercel event: a `deployment.succeeded` payload carries the whole deployment
+# object. Exceeding the cap raises 413, and Vercel retries a webhook for as long
+# as it is not answered 2xx -- so one oversized delivery would be re-sent
+# forever, and every delivery after it would keep failing for the same reason.
+# Raised here, for this route only, and still bounded: an unbounded read is a
+# denial of service in the other direction.
+MARKETPLACE_WEBHOOK_MAX_BYTES = 512 * 1024
+
+
+@app.post(marketplace_config.WEBHOOK_PATH)
+def marketplace_webhook():
+    """Receive one Vercel event.
+
+    A bad signature answers 403 rather than 200 on purpose. The reference
+    implementation returns 200 to stop retries; we would rather the delivery
+    show up as failed in Vercel's own webhook log, because an integration whose
+    secret is wrong is an integration receiving *nothing*, and a green log is
+    the one symptom that hides it.
+    """
+    request.max_content_length = MARKETPLACE_WEBHOOK_MAX_BYTES
+    try:
+        outcome, status = MARKETPLACE.handle_webhook(
+            request.get_data(), request.headers.get("x-vercel-signature"))
+    except MarketplaceError as error:
+        app.logger.warning("marketplace webhook rejected: %s", error.code)
+        return marketplace_error_response(error)
+    return jsonify(outcome), status
+
+
+# --- Vercel Marketplace: browser flows ---------------------------------------
+# Two redirects, both opened from inside the Vercel dashboard. `/configure` is
+# the Redirect URL used during installation; `/callback` is the Redirect Login
+# URL used by "Open in Provider". They differ in what the exchanged code is good
+# for -- an install token versus a user identity -- and the two are never
+# accepted interchangeably.
+
+@app.get(marketplace_config.CONFIGURE_PATH)
+def marketplace_configure():
+    redirect_uri = f"{request.url_root.rstrip('/')}{marketplace_config.CONFIGURE_PATH}"
+    try:
+        exchanged = MARKETPLACE.begin_install(request.args, redirect_uri=redirect_uri)
+        installation = MARKETPLACE.complete_install(exchanged)
+    except MarketplaceError as error:
+        return render_message("تعذّر إتمام التثبيت", error.message, code=error.code,
+                              settings=MARKETPLACE_CONFIG), 502
+    target = marketplace_safe_target(exchanged.get("next") or "")
+    if not installation:
+        # The exchange worked but produced nothing we could store, so there is
+        # no session to mint and no dashboard to show. Say so rather than
+        # redirecting into a page that would come up empty.
+        return render_message("التثبيت يحتاج خطوة أخرى",
+                              "تم تبادل الرمز مع Vercel لكن لم يصل سجلّ تثبيت بعد؛ "
+                              "أكمل إنشاء المورد من تبويب Storage في Vercel.",
+                              code="installation_pending",
+                              settings=MARKETPLACE_CONFIG), 200
+    response = redirect(target or f"{marketplace_config.DASHBOARD_PATH}"
+                                  f"?installation={quote(installation['id'], safe='')}")
+    response.set_cookie("waha_mp", MARKETPLACE.session_token(installation["id"]),
+                        max_age=MARKETPLACE_CONFIG.session_ttl_seconds,
+                        httponly=True, samesite="Lax", secure=request.is_secure,
+                        path="/")
+    return response
+
+
+@app.get(marketplace_config.REDIRECT_LOGIN_PATH)
+def marketplace_callback():
+    try:
+        session = MARKETPLACE.sso_login(request.args)
+    except MarketplaceError as error:
+        return render_message("تعذّر الدخول", error.message, code=error.code,
+                              settings=MARKETPLACE_CONFIG), 502
+    installation_id = str(session["claims"].get("installation_id") or "")
+    if not installation_id:
+        return render_message("لا تثبيت مرتبط بهذا الحساب",
+                              "أنشئ موردًا من تبويب Storage في Vercel أولًا، ثم افتح "
+                              "لوحة واحة من صفحة المورد.",
+                              code="no_installation",
+                              settings=MARKETPLACE_CONFIG), 200
+    response = redirect(f"{marketplace_config.DASHBOARD_PATH}"
+                        f"?installation={quote(installation_id, safe='')}")
+    response.set_cookie("waha_mp", MARKETPLACE.session_token(installation_id),
+                        max_age=MARKETPLACE_CONFIG.session_ttl_seconds,
+                        httponly=True, samesite="Lax", secure=request.is_secure,
+                        path="/")
+    return response
+
+
+@app.get(marketplace_config.DASHBOARD_PATH)
+def marketplace_dashboard():
+    """The resource dashboard. Refuses rather than renders a partial view.
+
+    Without a valid session the answer is a message, not an empty dashboard: an
+    unauthenticated visitor must never be able to enumerate installation ids,
+    which is exactly what an empty-but-populated page would leak.
+    """
+    installation_id = str(request.args.get("installation") or "")
+    if not installation_id or not MARKETPLACE.read_session(
+            request.cookies.get("waha_mp"), installation_id):
+        return render_message("الدخول مطلوب",
+                              "افتح هذه اللوحة من صفحة التكامل في لوحة تحكّم Vercel؛ "
+                              "الجلسة موقّعة وتنتهي بعد ثماني ساعات.",
+                              code="sign_in_required", settings=MARKETPLACE_CONFIG)
+    return render_dashboard(MARKETPLACE.dashboard(installation_id), MARKETPLACE_CONFIG)
+
+
+@app.get("/api/owner/marketplace")
+def owner_marketplace():
+    """Marketplace status for the owner console. Booleans, counts, no secrets."""
+    return jsonify(MARKETPLACE.status())
 
 
 if __name__ == "__main__":
