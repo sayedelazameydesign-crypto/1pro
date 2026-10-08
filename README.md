@@ -1,4 +1,4 @@
-# واحة · Waha MVP + GitHub
+# Celia 711 · Waha MVP + GitHub
 
 قالب جاهز للرفع إلى المستودع المقترح:
 https://github.com/sayedelazameydesign-crypto/1pro
