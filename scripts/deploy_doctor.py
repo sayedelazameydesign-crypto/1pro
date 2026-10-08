@@ -487,7 +487,7 @@ def self_test():
          None, False),
         ("render hook and folder id that are right", dict(
             good, RENDER_DEPLOY_HOOK_URL="https://api.render.com/deploy/srv-9zxc?key=abcdefgh",
-            RENDER_SERVICE_ID="srv-9zxc", GOOGLE_DRIVE_FOLDER_ID="1tb_cBlKZwKy98Ug-1Ie84ZOEnLoZ3lub"),
+            RENDER_SERVICE_ID="srv-9zxc", GOOGLE_DRIVE_FOLDER_ID="1FakeFolderIdForTestsOnlyAAAAAAAAAAA"),
          None, True),
         ("non-vercel deploy hook", dict(good, DEPLOY_HOOK_URL="https://evil.test/deploy"),
          None, False),
