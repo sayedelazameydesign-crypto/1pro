@@ -48,29 +48,30 @@ jobs:
         env:
           # Presence only: nothing here prints a value.
           V_DATABASE_URL: ${{ vars.DATABASE_URL }}
+          V_NEON_DATABASE_URL: ${{ vars.NEON_DATABASE_URL }}
           V_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY }}
           V_WAHA_SECRET: ${{ vars.WAHA_SECRET }}
           V_VERCEL_TOKEN: ${{ vars.VERCEL_TOKEN }}
           V_NEON_API_KEY: ${{ vars.NEON_API_KEY }}
         run: |
-          for name in DATABASE_URL GEMINI_API_KEY WAHA_SECRET VERCEL_TOKEN NEON_API_KEY; do
+          for name in DATABASE_URL NEON_DATABASE_URL GEMINI_API_KEY WAHA_SECRET VERCEL_TOKEN NEON_API_KEY; do
             key="V_$name"
             if [ -n "${!key:-}" ]; then
-              echo "::warning title=variable::$name is set as a repository or environment VARIABLE. This repository is public, so its variables are readable by anyone -- move $name to Actions secrets (and delete the variable)."
+              echo "::warning title=variable::$name is set as a repository or environment VARIABLE, and this workflow no longer reads it from there. This repository is public, so its variables are readable by anyone: store $name as an Actions secret, delete the variable, and rotate the value."
             fi
           done
 
       - name: Read GitHub secrets, push them to Vercel, verify production
         id: sync
         env:
-          # Every alias is tried in order; the first non-empty one wins. `vars.*`
-          # is the fallback for a key that was stored as a repository/environment
-          # *variable* instead of a secret (secrets are the safer place).
-          # `secrets.X || vars.X`: a key stored as a repository/environment
-          # *variable* still works, and the step below says so out loud. Either
-          # way the value must be non-empty for the name to be reported as found.
-          DATABASE_URL: ${{ secrets.DATABASE_URL || vars.DATABASE_URL }}
-          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL || vars.NEON_DATABASE_URL }}
+          # Every alias is tried in order; the first non-empty one wins. The secret
+          # keys read `secrets.X` only: a value stored as a repository or environment
+          # *variable* is ignored, and the step above names it. Identifiers and
+          # settings (project and team ids, allowed origins) still fall back to
+          # `vars.X`, because they are not secrets. Either way the value must be
+          # non-empty for the name to be reported as found.
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           DATABASE_PRIVATE_URL: ${{ secrets.DATABASE_PRIVATE_URL }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           POSTGRES_PRISMA_URL: ${{ secrets.POSTGRES_PRISMA_URL }}
@@ -87,17 +88,17 @@ jobs:
           # A Neon API key is not a connection string, but it can produce one: the
           # script derives the pooled URL from it when DATABASE_URL is absent or is not
           # a Postgres URL, then proves it with the same live query. See DEPLOY-VERCEL.md.
-          NEON_API_KEY: ${{ secrets.NEON_API_KEY || vars.NEON_API_KEY }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID || vars.NEON_PROJECT_ID }}
           NEON_ROLE: ${{ vars.NEON_ROLE }}
           NEON_DATABASE: ${{ vars.NEON_DATABASE }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || vars.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           GOOGLE_AI_KEY: ${{ secrets.GOOGLE_AI_KEY }}
           GEMINI_TOKEN: ${{ secrets.GEMINI_TOKEN }}
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
-          WAHA_SECRET: ${{ secrets.WAHA_SECRET || vars.WAHA_SECRET }}
+          WAHA_SECRET: ${{ secrets.WAHA_SECRET }}
           WAHA_APP_SECRET: ${{ secrets.WAHA_APP_SECRET }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
           FLASK_SECRET: ${{ secrets.FLASK_SECRET }}
@@ -106,7 +107,7 @@ jobs:
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
           WAHA_ORIGINS: ${{ secrets.WAHA_ORIGINS }}
           CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN || vars.VERCEL_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
           VERCEL_ACCESS_TOKEN: ${{ secrets.VERCEL_ACCESS_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
