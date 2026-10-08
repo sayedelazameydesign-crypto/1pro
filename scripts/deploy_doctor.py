@@ -264,6 +264,41 @@ def check(env, target="render", vercel_path=None):
                             "نطاق الفريق، أما المعرّف فيعمل دائمًا (Vercel → Project → "
                             "Settings → Project ID).")
 
+    # 5c) The two providers the portal gained -- same class of guard, same offline rule.
+    # Render's hook carries its secret in a `?key=` query parameter, so it is
+    # validated by host and never echoed back. A hook pointed at an arbitrary host
+    # is not a tolerable typo: the server would POST to it whenever the owner clicks
+    # deploy, and the operator would read the failure as "Render is down".
+    render_hook = env.get("RENDER_DEPLOY_HOOK_URL", "").strip()
+    if render_hook:
+        try:
+            rh_parts = urlsplit(render_hook)
+            rh_host = normalize_hostname(rh_parts.hostname)
+            rh_port = rh_parts.port
+        except ValueError:
+            rh_parts, rh_host, rh_port = None, None, None
+        if (rh_parts is None or rh_parts.scheme.lower() != "https" or not rh_host
+                or rh_parts.username is not None or rh_parts.password is not None
+                or rh_parts.fragment or rh_port not in (None, 443)
+                or not rh_parts.path.startswith("/deploy/")):
+            errors.append("RENDER_DEPLOY_HOOK_URL يجب أن يكون رابط HTTPS قياسياً من Render "
+                          "Deploy Hooks؛ لم تُطبع قيمة الرابط لأنها سرّ نشر.")
+        elif rh_host != "api.render.com":
+            errors.append("RENDER_DEPLOY_HOOK_URL يجب أن يستهدف api.render.com فقط؛ لا تُستخدم "
+                          "وجهات مخصّصة في Hook النشر.")
+    render_service = env.get("RENDER_SERVICE_ID", "").strip()
+    if render_service and any(char in render_service for char in " \t/?#&"):
+        errors.append("RENDER_SERVICE_ID يُستخدم كقطعة مسار في رابط Render، فلا يقبل مسافة "
+                      "ولا `/`. استخدم المعرّف `srv-…` من Render → Service → Settings.")
+    # A Drive folder id is interpolated into a ``q='<id>' in parents`` clause, so one
+    # quote turns the filter into a different filter. The client refuses it; the
+    # doctor says so before a deploy rather than after a 400 from Google.
+    drive_folder = env.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+    if drive_folder and ("'" in drive_folder
+                         or any(char in drive_folder for char in ' \t/?#&"')):
+        errors.append("GOOGLE_DRIVE_FOLDER_ID غير صالح: معرّف مجلد Drive لا يحمل مسافة ولا "
+                      "علامة اقتباس ولا `/`. انسخه من رابط المجلد ما بين /folders/ و ؟.")
+
     # 6) The static front door's pointer to the API.
     config_path = ROOT / "docs" / "data" / "config.json"
     api_base = ""
@@ -444,6 +479,16 @@ def self_test():
         ("insecure owner origin", dict(good, WAHA_OWNER_TOKEN="C" * 64,
                                          WAHA_OWNER_ALLOWED_ORIGINS="http://admin.example.com"),
          None, False),
+        ("non-render deploy hook", dict(good, RENDER_DEPLOY_HOOK_URL="https://evil.test/deploy/srv-1?key=k"),
+         None, False),
+        ("render hook that is not a hook", dict(good, RENDER_DEPLOY_HOOK_URL="https://api.render.com/v1/services"),
+         None, False),
+        ("drive folder id that closes the query", dict(good, GOOGLE_DRIVE_FOLDER_ID="x' or '1'='1"),
+         None, False),
+        ("render hook and folder id that are right", dict(
+            good, RENDER_DEPLOY_HOOK_URL="https://api.render.com/deploy/srv-9zxc?key=abcdefgh",
+            RENDER_SERVICE_ID="srv-9zxc", GOOGLE_DRIVE_FOLDER_ID="1FakeFolderIdForTestsOnlyAAAAAAAAAAA"),
+         None, True),
         ("non-vercel deploy hook", dict(good, DEPLOY_HOOK_URL="https://evil.test/deploy"),
          None, False),
         ("sqlite db", dict(good, DATABASE_URL="sqlite:///x.db?sslmode=require"), None, False),

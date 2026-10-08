@@ -137,10 +137,19 @@ Flask ولا الشبكة**. `app.py` يحقن الإعداد والنقل (`Tra
 | `http.Transport` | الطريقة الوحيدة التي يناديها عميل. `UrllibTransport` للتنفيذ؛ وعند DNS-guard يثبّت IP الذي فُحص مع إبقاء Host/SNI الأصليين، وأي بديل آخر للاختبار |
 | `github.GitHubClient` | `list_runs` قراءة · `dispatch` كتابة · تطبيع يحذف بريد صاحب الـcommit |
 | `vercel.VercelClient` | `list_deployments` قراءة · `trigger_deploy_hook` كتابة · القراءتان منفصلتان عمدًا |
+| `render.RenderClient` | `list_deploys` قراءة · `trigger_deploy_hook` كتابة · سرّ الرابط في `?key=` فيُحمَّر الرابط كاملًا |
+| `drive.DriveClient` | `list_files` قراءة · `upload_text` كتابة · يصنع رمز وصول من refresh token ويكيّفه 60 ثانية قبل انتهائه |
 | `service.IntegrationService` | الكائن الوحيد الذي يكلّمه `app.py`؛ يبني المُحمِّر ويعلن الجاهزية |
 
-القراءتان والكتابتان منفصلتان لأن صلاحياتهما مختلفة: رمز Vercel للقراءة لا يستطيع النشر،
-ورابط الـhook لا يستطيع القراءة. تسريب أحدهما لا يمنح الآخر.
+القراءتان والكتابتان (وأربع بطاقات البوابة) منفصلتان لأن صلاحياتهما مختلفة: رمز Vercel
+للقراءة لا يستطيع النشر، ورابط الـhook لا يستطيع القراءة. تسريب أحدهما لا يمنح الآخر.
+وينطبق الفصل نفسه على Drive: الردّ يُقلَّص إلى `id`/`name`/`webViewLink` فلا يسافر
+`owners` ولا `permissions` إلى المتصفح، وملف بلا اسم صالح أو أكبر من 512KB يُرفض قبل
+أن تُبنى أي قطعة مسار.
+
+`GOOGLE_DRIVE_ACCESS_TOKEN` مقابل ثلاثيّ refresh ليس تفصيلًا تنظيميًا: الأول ينتهي
+سريعًا ولا يُجدَّد، والثاني يجدّد نفسه؛ والحارس يرفض النصف (لا `configured`) لأن
+`invalid_grant` من جوجل يشبه «رمز مرفوض»، والخلط بينهما يضيّع ساعة على مفتاح سليم.
 
 **حدّ المضيف:** `app.config["TRUSTED_HOSTS"]` يضمّ الاسم الذي تعلنه المنصة (`RENDER_EXTERNAL_HOSTNAME` أو
 `VERCEL_URL`/`VERCEL_PROJECT_PRODUCTION_URL`) والمضيفات exact في `WAHA_TRUSTED_HOSTS`.

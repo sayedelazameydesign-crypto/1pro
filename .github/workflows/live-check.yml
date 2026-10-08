@@ -1,0 +1,189 @@
+name: Live check integrations (read-only)
+
+# The offline layers prove the logic; only a call to the real API proves that a
+# credential and its *scopes* work. A fine-grained GitHub token without
+# `actions: read`, a Vercel token on the wrong team, a Render key from another
+# account, a Drive grant the owner revoked in their Google account settings — all
+# four are invisible to every mocked test, because a mock answers 200 no matter
+# what the token says. This is the layer that sees them.
+#
+# Why a workflow and not a sandbox command: the checker must reach
+# api.vercel.com / api.render.com / www.googleapis.com, and the agent sandbox is
+# allow-listed to github.com + the package indexes only (those hosts answer 000
+# there). A GitHub runner reaches all of them, and it is the one place the
+# deployment keys already live. Same bridge `sync-vercel-env.yml` is for.
+#
+# READ-ONLY BY CONSTRUCTION. `--allow-mutations` appears nowhere in this file, and
+# it must not be added here: the four writes are a CI dispatch, two production
+# deploy hooks and a file in the owner's Drive. A button labelled "check my
+# tokens" that can deploy production as a side effect is a trap, so those stay a
+# human command, run by someone who decided that shipping now is the point:
+#
+#     python scripts/integrations_live_check.py --allow-mutations
+#
+# What a PASS here does NOT mean, stated where it cannot be missed: the GitHub row
+# falls back to the automatic job token when no `GITHUB_INTEGRATION_TOKEN` secret
+# exists. That proves a token with `actions: read` can read this repository — not
+# that the token stored for the *portal* can. The step says which of the two it
+# used, and a fallback is annotated as `partial`, never as a verified credential.
+#
+# The findings are republished as job annotations, the same channel prod-probe.yml
+# uses, because a run's raw log is served from a host outside the sandbox
+# allow-list; `gh api .../check-runs/<id>/annotations` is inside it. The GitHub run
+# summary carries the same table for the human who opens it in a browser.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: live-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Presence and value only; no step in this file echoes any of them, and the
+      # checker redacts every message before it prints it.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_INTEGRATION_TOKEN || secrets.GITHUB_TOKEN }}
+      GITHUB_REPO: ${{ vars.GITHUB_REPO || github.repository }}
+      GITHUB_WORKFLOW_ID: ${{ vars.GITHUB_WORKFLOW_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID || secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID || secrets.VERCEL_TEAM_ID }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID || secrets.RENDER_SERVICE_ID }}
+      # Deliberately NOT passed: the deploy hook is a write credential, and this
+      # workflow cannot fire one. Read-only is a property of the runner's
+      # environment, not only of the flag.
+      GOOGLE_DRIVE_ACCESS_TOKEN: ${{ secrets.GOOGLE_DRIVE_ACCESS_TOKEN }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ vars.GOOGLE_DRIVE_FOLDER_ID }}
+      # Read by the checker only to warn that the /integrations page itself would
+      # refuse everything without it. Not a provider key.
+      WAHA_OWNER_TOKEN: ${{ secrets.WAHA_OWNER_TOKEN }}
+      # Which token the GitHub row is really about. Decided by the expression
+      # because a step cannot tell the fallback apart after the fact: by then
+      # `GITHUB_TOKEN` is set either way, and a PASS would have no provenance.
+      LIVE_CHECK_SOURCE: ${{ secrets.GITHUB_INTEGRATION_TOKEN != '' && 'stored-secret' || 'job-token' }}
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      # This repository is public, and `vars.*` are readable by anyone who can see
+      # it. A secret pasted into the wrong box is the failure this catches, and it
+      # is reported without printing the value that made it obvious.
+      - name: Flag any key stored as a variable instead of a secret
+        env:
+          V_VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          V_VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          V_RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
+          V_GOOGLE_DRIVE_FOLDER_ID: ${{ vars.GOOGLE_DRIVE_FOLDER_ID }}
+          V_GITHUB_REPO: ${{ vars.GITHUB_REPO }}
+          V_GITHUB_WORKFLOW_ID: ${{ vars.GITHUB_WORKFLOW_ID }}
+        run: |
+          for name in VERCEL_PROJECT_ID VERCEL_TEAM_ID RENDER_SERVICE_ID \
+                      GOOGLE_DRIVE_FOLDER_ID GITHUB_REPO GITHUB_WORKFLOW_ID; do
+            key="V_$name"
+            if [ -n "${!key:-}" ]; then
+              echo "::warning title=not-a-secret::$name is stored as a variable. Fine for an id; for a key, move it to Secrets and delete the variable."
+            fi
+          done
+          for secret in RENDER_API_KEY GOOGLE_DRIVE_REFRESH_TOKEN GOOGLE_DRIVE_CLIENT_SECRET VERCEL_TOKEN; do
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/secrets/$secret" >/dev/null 2>&1; then
+              echo "::notice title=absent::$secret is not stored, so its provider will report SKIP, not FAIL."
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Read every provider's API, once, and publish the verdicts
+        run: |
+          set -uo pipefail
+          python scripts/integrations_live_check.py --json > /tmp/live.json 2>/tmp/live.err
+          code=$?
+          # The exit code crosses the shell/python boundary as an environment
+          # variable, not as a bare name: `$code` does not exist inside the
+          # heredoc, and referring to it there was a NameError on every run.
+          LIVE_CHECK_CODE="$code" LIVE_CHECK_REPORT=/tmp/live.json python - <<'PY'
+          import json, os, pathlib
+
+          ESCAPE = {"%": "%25", "\r": "%0D", "\n": "%0A", ":": "%3A"}
+
+          def esc(text):
+              for ch, rep in ESCAPE.items():
+                  text = text.replace(ch, rep)
+              return text[:800]
+
+          raw = pathlib.Path(os.environ.get("LIVE_CHECK_REPORT", "/tmp/live.json")) \
+                   .read_text(encoding="utf-8").strip()
+          try:
+              rows = json.loads(raw) if raw else []
+          except ValueError:
+              rows = []
+              print("::error title=unreadable-report::the checker printed no JSON; "
+                    "exit code was the only signal")
+
+          source = os.environ.get("LIVE_CHECK_SOURCE", "unknown")
+          try:
+              code = int(os.environ.get("LIVE_CHECK_CODE", "0"))
+          except ValueError:
+              code = 1
+          lines = ["| provider | operation | verdict | detail |", "|---|---|---|---|"]
+          for row in rows:
+              lines.append("| {provider} | {operation} | {status} | {detail} |".format(
+                  **{k: str(row.get(k, "")) for k in ("provider", "operation", "status",
+                                                      "detail")}))
+              title = "live-{}-{}".format(row.get("provider", "?"), row.get("status", "?"))
+              body = "{} · {}".format(row.get("operation", ""), row.get("detail", ""))
+              cmd = "notice" if row.get("status") in ("PASS", "SKIP") else (
+                    "warning" if row.get("status") == "BLOCKED" else "error")
+              print("::%s title=%s::%s" % (cmd, esc(title), esc(body)))
+
+          lines.append("")
+          lines.append("GitHub credential source: `%s`. " % source +
+                       ("The operator's own `GITHUB_INTEGRATION_TOKEN` was used."
+                        if source == "stored-secret" else
+                        "No `GITHUB_INTEGRATION_TOKEN` secret exists, so the GitHub "
+                        "row used the automatic job token: it proves *a* token can "
+                        "read Actions here, not the one the portal is configured "
+                        "with. Treat that row as partial."))
+          lines.append("")
+          lines.append("Read-only run: deploy hooks, workflow dispatch and the Drive "
+                       "probe file are SKIP by design "
+                       "(`--allow-mutations` is not a flag this workflow passes).")
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as handle:
+                  handle.write("## Integrations live check\n\n" + "\n".join(lines) + "\n")
+
+          # Exit mapping, and the reason for each number. 1: a credential was
+          # judged and refused -- red, no argument. 2: nothing was attempted, and
+          # a green run that verified nothing is the exact failure mode this whole
+          # file was written against -- also red. 3: nothing failed, but a check
+          # died before any HTTP response, so no verdict exists -- the operator's
+          # network or the upstream's, not their key: warning, not failure.
+          if rows and source == "job-token" and any(
+                  row.get("provider") == "GitHub" and row.get("status") == "PASS"
+                  for row in rows):
+              print("::warning title=github-row-is-partial::PASS came from the "
+                    "automatic job token, not from a stored operator credential")
+          if code in (1, 2):
+              print(open("/tmp/live.err", encoding="utf-8").read())
+          raise SystemExit(1 if code in (1, 2) else 0)
+          PY
+          echo "checker exit: $code"
+          if [ "$code" = "3" ]; then
+            echo "::warning title=blocked::at least one check died before any HTTP response existed, so that credential is unjudged -- not invalid"
+          fi
+        shell: bash

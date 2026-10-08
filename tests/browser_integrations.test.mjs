@@ -34,21 +34,28 @@ const fullStatus = {
   vercel: {configured: true, project_id: 'prj_1', has_deploy_hook: true, missing: [],
            token_fingerprint: 'ef56…gh78',
            capabilities: {list_deployments: true, trigger_hook: true}},
-  confirm_phrases: {github_dispatch: 'dispatch-ci', vercel_deploy: 'deploy'}
+  render: {configured: true, service_id: 'srv_1', has_deploy_hook: true, missing: [],
+           token_fingerprint: 'aa11…bb22',
+           capabilities: {list_deploys: true, trigger_hook: true}},
+  drive: {configured: true, credential: 'refresh_token', folder_id: 'fld_1', missing: [],
+          token_fingerprint: 'cc33…dd44',
+          capabilities: {list_files: true, upload: true, default_folder: true}},
+  confirm_phrases: {github_dispatch: 'dispatch-ci', vercel_deploy: 'deploy',
+                    render_deploy: 'deploy-render', drive_upload: 'upload-drive'}
 };
 
 const byId = (cards, id) => cards.filter(card => card.id === id)[0];
 
 scenario('a page with no payload claims nothing', async () => {
   const cards = logic.buildCards(null);
-  assert.equal(cards.length, 4);
+  assert.equal(cards.length, 8);
   cards.forEach(card => {
     assert.equal(card.state, logic.UNKNOWN, card.id + ' went green with no payload');
     assert.equal(card.label, 'غير معروف');
   });
 });
 
-scenario('a configured server makes all four cards ready', async () => {
+scenario('a configured server makes all eight cards ready', async () => {
   const cards = logic.buildCards(fullStatus);
   cards.forEach(card => assert.equal(card.state, logic.READY, card.id));
 });
@@ -168,6 +175,44 @@ scenario('every card keeps the endpoint it will call', async () => {
     if (card.method === 'POST') {
       assert.ok(card.mutation, card.id + ' is a mutation without a confirm action');
     }
+  });
+});
+
+scenario('render states map to the four tones, and an unseen word stays unknown', async () => {
+  assert.equal(logic.renderTone({state: 'live'}), logic.OK);
+  assert.equal(logic.renderTone({state: 'build_failed'}), logic.BAD);
+  assert.equal(logic.renderTone({state: 'build_in_progress'}), logic.PENDING);
+  assert.equal(logic.renderTone({state: 'SOMETHING_RENDER_INVENTED'}), logic.UNKNOWN);
+  assert.equal(logic.renderTone({}), logic.UNKNOWN);
+});
+
+scenario('a render row keeps the absolute url the server gave, untouched', async () => {
+  // Vercel answers a bare host, Render answers a full URL. Prefixing here would
+  // build https://https//…, so the two shapers are separate on purpose.
+  const row = logic.renderRow({id: 'dpl_1', state: 'live', branch: 'main',
+                               sha: 'abc123', url: 'https://github.com/acme/widgets/commit/x'});
+  assert.equal(row.url, 'https://github.com/acme/widgets/commit/x');
+  assert.equal(row.meta, 'main · abc123');
+  assert.equal(row.tone, logic.OK);
+});
+
+scenario('a drive row carries no tone and no person', async () => {
+  const row = logic.driveRow({id: 'f1', name: 'report.md', mime_type: 'text/markdown',
+                              size: 2048, modified_at: '2026-10-08T10:00:00Z',
+                              owners: [{emailAddress: 'owner@example.com'}]});
+  assert.equal(row.tone, undefined, 'a file listing invented a verdict');
+  assert.equal(row.size_label, '2.0 KB');
+  assert.ok(!JSON.stringify(row).includes('owner@example.com'), 'the raw Drive owner block leaked');
+});
+
+scenario('the two new mutations gate on their own phrases', async () => {
+  assert.equal(logic.confirmPhraseFor(fullStatus, 'render_deploy'), 'deploy-render');
+  assert.equal(logic.confirmPhraseFor(fullStatus, 'drive_upload'), 'upload-drive');
+  const cards = logic.buildCards(fullStatus);
+  const write = cards.filter(function (c) { return c.method === 'POST'; });
+  assert.equal(write.length, 4, 'a new write card appeared without a mutation name');
+  write.forEach(function (card) {
+    assert.ok(fullStatus.confirm_phrases[card.mutation], card.id + ' has no published phrase');
   });
 });
 

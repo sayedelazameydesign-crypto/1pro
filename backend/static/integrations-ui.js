@@ -79,16 +79,30 @@
     });
 
     const cards = logic.buildCards(state.status);
-    const dispatchReady = cards.filter(function (c) { return c.id === 'github-dispatch'; })[0];
-    const hookReady = cards.filter(function (c) { return c.id === 'vercel-hook'; })[0];
-    $('dispatch-box').hidden = !(dispatchReady && dispatchReady.state === logic.READY);
-    $('hook-box').hidden = !(hookReady && hookReady.state === logic.READY);
-    $('dispatch-hint').textContent = dispatchReady && dispatchReady.state === logic.READY
+    const ready = function (id) {
+      const card = cards.filter(function (c) { return c.id === id; })[0];
+      return !!(card && card.state === logic.READY);
+    };
+    // A write box appears only for a capability the server called ready. That is
+    // the whole point of the four-box pattern: a button that cannot work is worse
+    // than no button, because it teaches the operator to distrust the page.
+    $('dispatch-box').hidden = !ready('github-dispatch');
+    $('hook-box').hidden = !ready('vercel-hook');
+    $('render-hook-box').hidden = !ready('render-hook');
+    $('upload-box').hidden = !ready('drive-upload');
+    const writeNote = ' · الحد 3 عمليات كتابة في الدقيقة.';
+    $('dispatch-hint').textContent = ready('github-dispatch')
       ? 'يتطلب نص التأكيد: ' + logic.confirmPhraseFor(state.status, 'github_dispatch')
-        + ' · الحد 3 عمليات كتابة في الدقيقة.' : '';
-    $('hook-hint').textContent = hookReady && hookReady.state === logic.READY
+        + writeNote : '';
+    $('hook-hint').textContent = ready('vercel-hook')
       ? 'يتطلب نص التأكيد: ' + logic.confirmPhraseFor(state.status, 'vercel_deploy')
-        + ' · الحد 3 عمليات كتابة في الدقيقة.' : '';
+        + writeNote : '';
+    $('render-hint').textContent = ready('render-hook')
+      ? 'يتطلب نص التأكيد: ' + logic.confirmPhraseFor(state.status, 'render_deploy')
+        + writeNote : '';
+    $('upload-hint').textContent = ready('drive-upload')
+      ? 'يتطلب نص التأكيد: ' + logic.confirmPhraseFor(state.status, 'drive_upload')
+        + writeNote : '';
   }
 
   function table(rows, columns) {
@@ -149,6 +163,8 @@
     $('status-panel').hidden = !signedIn;
     $('github-panel').hidden = !signedIn;
     $('vercel-panel').hidden = !signedIn;
+    $('render-panel').hidden = !signedIn;
+    $('drive-panel').hidden = !signedIn;
   }
 
   function applyStatus(payload, note) {
@@ -265,6 +281,71 @@
       }).then(function (result) {
         log('vercel-log', result);
         $('deploy-confirm').value = '';
+      });
+    });
+
+    $('refresh-render').addEventListener('click', function () {
+      call('/api/owner/integrations/render/deploys').then(function (result) {
+        log('render-log', result);
+        if (!result.ok) {
+          paintRows('render-out', [], []);
+          return;
+        }
+        paintRows('render-out', logic.rowsFrom(result.payload, 'render'), [
+          {key: 'title', label: 'النشرة'},
+          {key: 'meta', label: 'تفاصيل'},
+          {key: 'tone', label: 'الحالة'},
+          {key: 'url', label: ''}
+        ]);
+      });
+    });
+
+    $('render-deploy-now').addEventListener('click', function () {
+      const phrase = logic.confirmPhraseFor(state.status, 'render_deploy');
+      if ($('render-confirm').value.trim() !== phrase) {
+        window.alert('اكتب نص التأكيد كما هو: ' + phrase);
+        return;
+      }
+      call('/api/owner/integrations/render/deploy-hook', {
+        method: 'POST', body: {confirm: phrase}
+      }).then(function (result) {
+        log('render-log', result);
+        $('render-confirm').value = '';
+      });
+    });
+
+    $('refresh-drive').addEventListener('click', function () {
+      call('/api/owner/integrations/drive/files').then(function (result) {
+        log('drive-log', result);
+        if (!result.ok) {
+          paintRows('drive-out', [], []);
+          return;
+        }
+        paintRows('drive-out', logic.rowsFrom(result.payload, 'drive'), [
+          {key: 'name', label: 'الملف'},
+          {key: 'mime_type', label: 'النوع'},
+          {key: 'size_label', label: 'الحجم'},
+          {key: 'modified_at', label: 'آخر تعديل'},
+          {key: 'url', label: ''}
+        ]);
+      });
+    });
+
+    $('upload-now').addEventListener('click', function () {
+      const phrase = logic.confirmPhraseFor(state.status, 'drive_upload');
+      if ($('upload-confirm').value.trim() !== phrase) {
+        window.alert('اكتب نص التأكيد كما هو: ' + phrase);
+        return;
+      }
+      call('/api/owner/integrations/drive/upload', {
+        method: 'POST',
+        body: {name: $('upload-name').value.trim(),
+               text: $('upload-content').value,
+               confirm: phrase}
+      }).then(function (result) {
+        log('drive-log', result);
+        $('upload-confirm').value = '';
+        if (result.ok) $('upload-content').value = '';
       });
     });
 

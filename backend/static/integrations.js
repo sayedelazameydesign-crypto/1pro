@@ -28,6 +28,35 @@
     BAD: 'فشل'
   };
 
+  /* The eight cards the page draws, in the order they appear. `capability` is the
+   * key inside the payload's `capabilities` object — the page cannot invent one. */
+  const CARDS = [
+    {id: 'github-runs', provider: 'github', capability: 'list_runs',
+     title: 'GitHub Actions · سجل التشغيلات', method: 'GET',
+     endpoint: '/api/owner/integrations/github/runs'},
+    {id: 'github-dispatch', provider: 'github', capability: 'dispatch',
+     title: 'GitHub Actions · تشغيل workflow', method: 'POST',
+     endpoint: '/api/owner/integrations/github/dispatch', mutation: 'github_dispatch'},
+    {id: 'vercel-deployments', provider: 'vercel', capability: 'list_deployments',
+     title: 'Vercel · سجل النشرات', method: 'GET',
+     endpoint: '/api/owner/integrations/vercel/deployments'},
+    {id: 'vercel-hook', provider: 'vercel', capability: 'trigger_hook',
+     title: 'Vercel · Deploy Hook', method: 'POST',
+     endpoint: '/api/owner/integrations/vercel/deploy-hook', mutation: 'vercel_deploy'},
+    {id: 'render-deploys', provider: 'render', capability: 'list_deploys',
+     title: 'Render · سجل النشرات', method: 'GET',
+     endpoint: '/api/owner/integrations/render/deploys'},
+    {id: 'render-hook', provider: 'render', capability: 'trigger_hook',
+     title: 'Render · Deploy Hook', method: 'POST',
+     endpoint: '/api/owner/integrations/render/deploy-hook', mutation: 'render_deploy'},
+    {id: 'drive-files', provider: 'drive', capability: 'list_files',
+     title: 'Google Drive · ملفات المجلد', method: 'GET',
+     endpoint: '/api/owner/integrations/drive/files'},
+    {id: 'drive-upload', provider: 'drive', capability: 'upload',
+     title: 'Google Drive · رفع ملف نصي', method: 'POST',
+     endpoint: '/api/owner/integrations/drive/upload', mutation: 'drive_upload'}
+  ];
+
   /* A capability is READY only when the payload said so. A payload that never
    * mentioned it is UNKNOWN, not MISSING — "the server didn't tell us" and "the
    * server told us no" are different facts and must not share a colour. */
@@ -43,23 +72,6 @@
     if (!entry || !Array.isArray(entry.missing)) return [];
     return entry.missing.filter(function (name) { return typeof name === 'string' && name; });
   }
-
-  /* The four cards the page draws, in the order they appear. `capability` is the
-   * key inside the payload's `capabilities` object — the page cannot invent one. */
-  const CARDS = [
-    {id: 'github-runs', provider: 'github', capability: 'list_runs',
-     title: 'GitHub Actions · سجل التشغيلات', method: 'GET',
-     endpoint: '/api/owner/integrations/github/runs'},
-    {id: 'github-dispatch', provider: 'github', capability: 'dispatch',
-     title: 'GitHub Actions · تشغيل workflow', method: 'POST',
-     endpoint: '/api/owner/integrations/github/dispatch', mutation: 'github_dispatch'},
-    {id: 'vercel-deployments', provider: 'vercel', capability: 'list_deployments',
-     title: 'Vercel · سجل النشرات', method: 'GET',
-     endpoint: '/api/owner/integrations/vercel/deployments'},
-    {id: 'vercel-hook', provider: 'vercel', capability: 'trigger_hook',
-     title: 'Vercel · Deploy Hook', method: 'POST',
-     endpoint: '/api/owner/integrations/vercel/deploy-hook', mutation: 'vercel_deploy'}
-  ];
 
   function buildCards(status) {
     if (!status || typeof status !== 'object') {
@@ -149,9 +161,61 @@
     };
   }
 
+  /* Render answers its own state words. The mapping is the page's, not the
+   * server's: an unlisted word is UNKNOWN — "we have not seen this state", which
+   * is not the same claim as "it is fine". */
+  function renderTone(deploy) {
+    if (!deploy || typeof deploy !== 'object') return UNKNOWN;
+    const state = String(deploy.state || '').toLowerCase();
+    if (!state) return UNKNOWN;
+    if (state === 'live') return OK;
+    if (state === 'build_failed' || state === 'canceled' || state === 'timed_out') return BAD;
+    if (state === 'created' || state === 'queued' || state === 'build_in_progress'
+        || state === 'update_in_progress') return PENDING;
+    return UNKNOWN;
+  }
+
+  function renderRow(deploy) {
+    const tone = renderTone(deploy);
+    const parts = [];
+    if (deploy && deploy.branch) parts.push(deploy.branch);
+    if (deploy && deploy.sha) parts.push(deploy.sha);
+    return {
+      id: (deploy && deploy.id) || null,
+      title: (deploy && (deploy.title || deploy.id)) || 'نشرة بلا اسم',
+      meta: parts.join(' · '),
+      state: (deploy && deploy.state) || null,
+      created_at: (deploy && deploy.created_at) || null,
+      tone: tone,
+      toneLabel: STATE_LABEL[tone],
+      url: (deploy && deploy.url) || null
+    };
+  }
+
+  /* A Drive listing has no success or failure to grade — a file is just there. So
+   * the row carries no tone at all: colouring every row green because the folder
+   * answered would be the same lie this page was built to refuse. */
+  function driveRow(file) {
+    const size = file && typeof file.size === 'number' ? file.size : null;
+    return {
+      id: (file && file.id) || null,
+      name: (file && file.name) || 'بلا اسم',
+      mime_type: (file && file.mime_type) || null,
+      modified_at: (file && file.modified_at) || null,
+      size_label: size === null ? '—' : (size < 1024 ? size + ' B'
+        : size < 1048576 ? (size / 1024).toFixed(1) + ' KB'
+        : (size / 1048576).toFixed(1) + ' MB'),
+      url: (file && file.url) || null
+    };
+  }
+
+  const ROW_SHAPERS = {run: runRow, deployment: deploymentRow, render: renderRow,
+                       drive: driveRow};
+
   function rowsFrom(payload, kind) {
     if (!payload || typeof payload !== 'object' || !Array.isArray(payload.items)) return [];
-    const shape = kind === 'deployment' ? deploymentRow : runRow;
+    const shape = Object.prototype.hasOwnProperty.call(ROW_SHAPERS, kind)
+      ? ROW_SHAPERS[kind] : runRow;
     return payload.items.map(shape);
   }
 
@@ -174,6 +238,9 @@
     runRow: runRow,
     deploymentTone: deploymentTone,
     deploymentRow: deploymentRow,
+    renderTone: renderTone,
+    renderRow: renderRow,
+    driveRow: driveRow,
     rowsFrom: rowsFrom,
     confirmPhraseFor: confirmPhraseFor
   };

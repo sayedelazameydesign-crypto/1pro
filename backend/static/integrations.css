@@ -64,7 +64,7 @@ form.login, section.panel {
 
 label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
 
-input[type=password], input[type=text], select {
+input[type=password], input[type=text], select, textarea {
   width: 100%; padding: 10px 12px; border-radius: 9px;
   border: 1px solid var(--line); background: var(--bg); color: var(--ink);
   font: inherit;
@@ -100,6 +100,9 @@ td a { color: var(--accent); text-decoration: none; }
 
 .mutation { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 12px; }
 .mutation .field { flex: 1 1 200px; }
+/* A file body needs the whole row, not one third of it. */
+.mutation .field.wide { flex: 1 1 100%; }
+textarea { resize: vertical; font-family: inherit; }
 .hint { font-size: .75rem; color: var(--muted); margin-top: 6px; }
 
 pre.out {

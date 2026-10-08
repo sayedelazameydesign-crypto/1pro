@@ -40,10 +40,18 @@ MAX_PAGE_SIZE = 100
 CONFIRM_PHRASES = {
     "github_dispatch": "dispatch-ci",
     "vercel_deploy": "deploy",
+    # The two additions are writes for the same reason as the two above: one
+    # redeploys a live service, the other creates a file in the owner's Drive.
+    "render_deploy": "deploy-render",
+    "drive_upload": "upload-drive",
 }
 
 GITHUB_API_BASE = "https://api.github.com"
 VERCEL_API_BASE = "https://api.vercel.com"
+RENDER_API_BASE = "https://api.render.com/v1"
+GOOGLE_DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
+GOOGLE_DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 def _int(raw, default, minimum, maximum):
@@ -210,6 +218,89 @@ class VercelSettings:
 
 
 @dataclass(frozen=True)
+class RenderSettings:
+    """Render's Blueprints API and its deploy hook, held apart on purpose.
+
+    Mirrors the Vercel split: reading deploy history needs ``RENDER_API_KEY``,
+    changing production needs only the hook URL. The service id is Render's own
+    ``srv-…`` identifier, so a wrong one is a 404 rather than a deploy of
+    something else.
+    """
+    api_key: str
+    service_id: str
+    deploy_hook: str
+    api_base: str = RENDER_API_BASE
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key and self.service_id)
+
+    @property
+    def hook_configured(self) -> bool:
+        return bool(self.deploy_hook)
+
+    def missing(self) -> Tuple[str, ...]:
+        out = []
+        if not self.api_key:
+            out.append("RENDER_API_KEY")
+        if not self.service_id:
+            out.append("RENDER_SERVICE_ID")
+        if not self.deploy_hook:
+            out.append("RENDER_DEPLOY_HOOK_URL")
+        return tuple(out)
+
+
+@dataclass(frozen=True)
+class DriveSettings:
+    """Google Drive, through an OAuth grant the owner minted once.
+
+    Two shapes are accepted because both are real in this project's lifecycle:
+
+    * ``GOOGLE_DRIVE_ACCESS_TOKEN`` -- what ``gcloud`` or a one-off consent run
+      produces. Short-lived, perfect for a trial, never stored by the server.
+    * the refresh triple -- ``GOOGLE_DRIVE_REFRESH_TOKEN`` + client id + secret.
+      The client mints a fresh access token per request, so a restart cannot
+      strand the surface on an expired 60-minute token.
+
+    ``refresh_token`` is a secret and is therefore in ``IntegrationConfig
+    .secrets()``; Drive's own error bodies quote the ``access_token`` they were
+    given, which is exactly the leak the redactor exists for.
+    """
+    access_token: str
+    refresh_token: str
+    client_id: str
+    client_secret: str
+    folder_id: str
+    api_base: str = GOOGLE_DRIVE_API_BASE
+    upload_base: str = GOOGLE_DRIVE_UPLOAD_BASE
+    token_uri: str = GOOGLE_TOKEN_URI
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.access_token or (self.refresh_token and self.client_id
+                                          and self.client_secret))
+
+    @property
+    def folder_configured(self) -> bool:
+        return bool(self.folder_id)
+
+    def missing(self) -> Tuple[str, ...]:
+        if self.access_token:
+            return ()
+        if self.refresh_token and self.client_id and self.client_secret:
+            return ()
+        out = []
+        if not (self.refresh_token and self.client_id and self.client_secret):
+            out.append("GOOGLE_DRIVE_ACCESS_TOKEN (أو الثلاثي: "
+                       "GOOGLE_DRIVE_REFRESH_TOKEN + GOOGLE_DRIVE_CLIENT_ID + "
+                       "GOOGLE_DRIVE_CLIENT_SECRET)")
+        return tuple(out)
+
+
+# ``GOOGLE_DRIVE_FOLDER_ID`` is deliberately absent from ``DriveSettings.missing()``
+# above: uploads without it land in "My Drive" root, which is a working outcome and
+# not a missing configuration.
+@dataclass(frozen=True)
 class OwnerSettings:
     token: str
     session_ttl_seconds: int = OWNER_SESSION_TTL_SECONDS
@@ -225,11 +316,21 @@ class OwnerSettings:
         return () if self.token else ("WAHA_OWNER_TOKEN",)
 
 
+# Defaults for a config built without the two newer providers: an omitted provider
+# must read as "not configured" (503 from its routes) rather than as an absent
+# attribute, so existing callers keep working while the portal gains cards.
+UNCONFIGURED_RENDER = RenderSettings(api_key="", service_id="", deploy_hook="")
+UNCONFIGURED_DRIVE = DriveSettings(access_token="", refresh_token="", client_id="",
+                                   client_secret="", folder_id="")
+
+
 @dataclass(frozen=True)
 class IntegrationConfig:
     owner: OwnerSettings
     github: GitHubSettings
     vercel: VercelSettings
+    render: RenderSettings = UNCONFIGURED_RENDER
+    drive: DriveSettings = UNCONFIGURED_DRIVE
     timeout_seconds: int = API_TIMEOUT_SECONDS
     page_size: int = DEFAULT_PAGE_SIZE
 
@@ -237,10 +338,14 @@ class IntegrationConfig:
         """Every value that must never appear in a response, log or stack trace.
 
         The deploy hook URL is included because Vercel puts a secret path segment
-        in it -- leaking the URL is leaking the ability to deploy.
+        in it -- leaking the URL is leaking the ability to deploy. Render's hook is
+        the same shape, and Drive's refresh token outlives every access token the
+        server mints from it, so it belongs here even though no response echoes it.
         """
         return (self.owner.token, self.github.token, self.vercel.token,
-                self.vercel.deploy_hook)
+                self.vercel.deploy_hook, self.render.api_key, self.render.deploy_hook,
+                self.drive.access_token, self.drive.refresh_token,
+                self.drive.client_secret)
 
     def describe(self) -> dict:
         """The public shape: booleans, limits and variable *names* only."""
@@ -253,6 +358,19 @@ class IntegrationConfig:
                        "project_id": self.vercel.project_id or None,
                        "has_deploy_hook": self.vercel.hook_configured,
                        "missing": list(self.vercel.missing())},
+            "render": {"configured": self.render.configured,
+                       "service_id": self.render.service_id or None,
+                       "has_deploy_hook": self.render.hook_configured,
+                       "missing": list(self.render.missing())},
+            "drive": {"configured": self.drive.configured,
+                      # Which shape is in use, without saying what it is: an
+                      # ephemeral access token expires on its own, a refresh token
+                      # does not, and the operator should know which one is live.
+                      "credential": ("access_token" if self.drive.access_token
+                                     else "refresh_token" if self.drive.configured
+                                     else None),
+                      "folder_id": self.drive.folder_id or None,
+                      "missing": list(self.drive.missing())},
             "owner": {"configured": self.owner.configured,
                       "session_ttl_seconds": self.owner.session_ttl_seconds,
                       "write_limit_per_minute": self.owner.write_limit_per_minute,
@@ -289,6 +407,23 @@ def load(environ: Mapping[str, str] | None = None) -> IntegrationConfig:
             team_id=get("VERCEL_TEAM_ID"),
             deploy_hook=get("DEPLOY_HOOK_URL"),
             api_base=get("VERCEL_API_BASE", VERCEL_API_BASE).rstrip("/"),
+        ),
+        render=RenderSettings(
+            api_key=get("RENDER_API_KEY"),
+            service_id=get("RENDER_SERVICE_ID"),
+            deploy_hook=get("RENDER_DEPLOY_HOOK_URL"),
+            api_base=get("RENDER_API_BASE", RENDER_API_BASE).rstrip("/"),
+        ),
+        drive=DriveSettings(
+            access_token=get("GOOGLE_DRIVE_ACCESS_TOKEN"),
+            refresh_token=get("GOOGLE_DRIVE_REFRESH_TOKEN"),
+            client_id=get("GOOGLE_DRIVE_CLIENT_ID"),
+            client_secret=get("GOOGLE_DRIVE_CLIENT_SECRET"),
+            folder_id=get("GOOGLE_DRIVE_FOLDER_ID"),
+            api_base=get("GOOGLE_DRIVE_API_BASE", GOOGLE_DRIVE_API_BASE).rstrip("/"),
+            upload_base=get("GOOGLE_DRIVE_UPLOAD_BASE",
+                            GOOGLE_DRIVE_UPLOAD_BASE).rstrip("/"),
+            token_uri=get("GOOGLE_TOKEN_URI", GOOGLE_TOKEN_URI),
         ),
         timeout_seconds=_int(env.get("WAHA_INTEGRATIONS_TIMEOUT"),
                              API_TIMEOUT_SECONDS, 1, 120),

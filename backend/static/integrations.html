@@ -22,7 +22,8 @@
 
   <p class="notice">
     هذه الصفحة للمالك فقط. المفاتيح (<code>GITHUB_*</code> · <code>VERCEL_*</code> ·
-    <code>DEPLOY_HOOK_*</code>) تبقى في الخادم ولا تصل إلى المتصفح إطلاقًا؛ ما يظهر هنا
+    <code>DEPLOY_HOOK_*</code> · <code>RENDER_*</code> · <code>GOOGLE_DRIVE_*</code>)
+    تبقى في الخادم ولا تصل إلى المتصفح إطلاقًا؛ ما يظهر هنا
     هو حالة التكامل وسجلّاته فقط. الجلسة موقّعة وتنتهي بعد 8 ساعات، وعمليات الكتابة
     محدودة بثلاث في الدقيقة وتتطلب نص تأكيد.
   </p>
@@ -81,6 +82,48 @@
     </div>
     <p class="hint" id="hook-hint"></p>
     <pre class="out" id="vercel-log" hidden></pre>
+  </section>
+
+  <section class="panel" id="render-panel" hidden>
+    <h2 style="margin-top:0;font-size:1rem">Render</h2>
+    <div class="mutation">
+      <button type="button" id="refresh-render">قراءة آخر النشرات</button>
+    </div>
+    <div id="render-out"></div>
+    <div class="mutation" id="render-hook-box" hidden>
+      <div class="field">
+        <label for="render-confirm">اكتب نص التأكيد</label>
+        <input id="render-confirm" type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="primary" type="button" id="render-deploy-now">تشغيل Deploy Hook</button>
+    </div>
+    <p class="hint" id="render-hint"></p>
+    <pre class="out" id="render-log" hidden></pre>
+  </section>
+
+  <section class="panel" id="drive-panel" hidden>
+    <h2 style="margin-top:0;font-size:1rem">Google Drive</h2>
+    <div class="mutation">
+      <button type="button" id="refresh-drive">قراءة ملفات المجلد</button>
+    </div>
+    <div id="drive-out"></div>
+    <div class="mutation" id="upload-box" hidden>
+      <div class="field">
+        <label for="upload-name">اسم الملف</label>
+        <input id="upload-name" type="text" value="waha-report.md" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="upload-confirm">اكتب نص التأكيد</label>
+        <input id="upload-confirm" type="text" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field wide">
+        <label for="upload-content">محتوى الملف</label>
+        <textarea id="upload-content" rows="5" spellcheck="false" placeholder="يُرفع كنص؛ الحد 512KB."></textarea>
+      </div>
+      <button class="primary" type="button" id="upload-now">رفع إلى Drive</button>
+    </div>
+    <p class="hint" id="upload-hint"></p>
+    <pre class="out" id="drive-log" hidden></pre>
   </section>
 
   <footer class="foot">

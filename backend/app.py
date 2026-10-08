@@ -642,7 +642,7 @@ def origin_allowed(origin):
 INTEGRATIONS_CONFIG = integrations_config.load()
 INTEGRATIONS = IntegrationService(INTEGRATIONS_CONFIG)
 OWNER_TOKEN_PREFIX = "waha-owner"
-OWNER_MUTATIONS = {"github_dispatch", "vercel_deploy"}
+OWNER_MUTATIONS = {"github_dispatch", "vercel_deploy", "render_deploy", "drive_upload"}
 
 
 def issue_owner_token(now=None):
@@ -778,9 +778,12 @@ def integration_error_response(error):
     elif error.code in ("invalid_config", "invalid_request", "invalid_target",
                         "host_not_allowed", "insecure_target"):
         status = 400
-    elif error.code in ("github_unauthorized", "vercel_unauthorized"):
+    elif error.code in ("github_unauthorized", "vercel_unauthorized",
+                       "render_unauthorized", "drive_unauthorized",
+                       "drive_token_failed"):
         status = 502
     elif error.code in ("github_unavailable", "vercel_unavailable",
+                        "render_unavailable", "drive_unavailable",
                         "upstream_unreachable", "upstream_timeout",
                         "pre_http_network_failure"):
         status = 504
@@ -1719,8 +1722,9 @@ def agent_memory_delete(memory_id):
 
 # --- Owner integrations API ---------------------------------------------------
 # Everything below /api/owner/ is gated by `owner_protect` (owner session + admin
-# CORS + CSRF). The two POSTs additionally require the action's confirmation
-# phrase and share the 3-per-minute write ceiling.
+# CORS + CSRF). The POSTs additionally require the action's confirmation phrase and
+# share the 3-per-minute write ceiling. Four providers, one gate: a route that
+# forgot the gate is a route that can deploy from any origin.
 #
 # There is deliberately no /logout: the session is a stateless signed token, so
 # the server holds no revocation list to remove it from. Claiming otherwise would
@@ -1810,6 +1814,57 @@ def owner_vercel_deploy_hook():
         return blocked
     try:
         return jsonify(INTEGRATIONS.vercel_deploy()), 202
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.get("/api/owner/integrations/render/deploys")
+def owner_render_deploys():
+    limit = request.args.get("limit", INTEGRATIONS_CONFIG.page_size, type=int) \
+        or INTEGRATIONS_CONFIG.page_size
+    try:
+        return jsonify(INTEGRATIONS.render_deploys(limit=limit))
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.post("/api/owner/integrations/render/deploy-hook")
+def owner_render_deploy_hook():
+    data = request.get_json(silent=True) or {}
+    blocked = owner_mutation("render_deploy", data)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(INTEGRATIONS.render_deploy()), 202
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.get("/api/owner/integrations/drive/files")
+def owner_drive_files():
+    limit = request.args.get("limit", INTEGRATIONS_CONFIG.page_size, type=int) \
+        or INTEGRATIONS_CONFIG.page_size
+    # A folder on the request overrides the configured one for this call only; it
+    # is never written back, so the server keeps one default folder per deploy.
+    folder = (request.args.get("folder") or "").strip()[:200] or None
+    try:
+        return jsonify(INTEGRATIONS.drive_files(limit=limit, folder_id=folder))
+    except IntegrationError as error:
+        return integration_error_response(error)
+
+
+@app.post("/api/owner/integrations/drive/upload")
+def owner_drive_upload():
+    data = request.get_json(silent=True) or {}
+    blocked = owner_mutation("drive_upload", data)
+    if blocked is not None:
+        return blocked
+    try:
+        return jsonify(INTEGRATIONS.drive_upload(
+            name=str(data.get("name") or ""),
+            text=str(data.get("text") or ""),
+            mime_type=str(data.get("mime_type") or "text/markdown"),
+            folder_id=str(data.get("folder_id") or "").strip() or None)), 201
     except IntegrationError as error:
         return integration_error_response(error)
 

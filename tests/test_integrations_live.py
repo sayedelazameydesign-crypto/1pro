@@ -1,4 +1,4 @@
-"""Layer 3 — live: real calls to GitHub and Vercel.
+"""Layer 3 — live: real calls to GitHub, Vercel, Render and Google Drive.
 
 Skipped unless the operator asks for it, because a test that reaches a third
 party's API is not a test CI can own: it depends on credentials, on rate limits,
@@ -17,9 +17,16 @@ dispatch`` and the deploy hook change real state; those are exercised by
 decided that starting a CI run and shipping a deployment right now is what they
 want. A test suite must not make that decision on its own.
 """
+import io
+import json
 import os
+import subprocess
 import sys
+import textwrap
+import tempfile
 import unittest
+from unittest import mock
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +42,17 @@ import integrations_live_check as live_check       # noqa: E402
 LIVE = os.environ.get("WAHA_LIVE_INTEGRATIONS", "") == "1"
 
 
+PROVIDERS = ("github", "vercel", "render", "drive")
+
+
 def missing_credentials():
+    """The variable *names* still missing, across every provider.
+
+    Reported per provider on purpose. The first version of this file skipped the
+    whole class when any one credential was absent, which quietly turned the live
+    layer off for the providers that *were* configured -- the same failure shape
+    the checker itself had, and the reason the gate is now per operation.
+    """
     config = cfgmod.load()
     absent = []
     if not config.github.configured:
@@ -43,7 +60,16 @@ def missing_credentials():
     if not config.vercel.configured:
         absent.extend(name for name in config.vercel.missing()
                       if name != "DEPLOY_HOOK_URL")
+    if not config.render.configured:
+        absent.extend(name for name in config.render.missing()
+                      if name != "RENDER_DEPLOY_HOOK_URL")
+    if not config.drive.configured:
+        absent.extend(config.drive.missing())
     return absent
+
+
+def configured_providers(config):
+    return {name for name in PROVIDERS if getattr(config, name).configured}
 
 
 class LiveGateTests(unittest.TestCase):
@@ -52,9 +78,15 @@ class LiveGateTests(unittest.TestCase):
     failure this class pins."""
 
     def test_the_checker_skips_mutations_unless_asked(self):
-        skipped = {item.operation: item.status
+        # Keyed by (provider, operation): two providers have a "deploy hook", and a
+        # dict keyed on the operation name alone would let one row stand in for the
+        # other -- a skip that reads as two skips.
+        skipped = {(item.provider, item.operation): item.status
                    for item in live_check.skip_mutations()}
-        self.assertEqual(skipped, {"workflow dispatch": "SKIP", "deploy hook": "SKIP"})
+        self.assertEqual(skipped, {("GitHub", "workflow dispatch"): "SKIP",
+                                   ("Vercel", "deploy hook"): "SKIP",
+                                   ("Render", "deploy hook"): "SKIP",
+                                   ("Google Drive", "create probe file"): "SKIP"})
         for item in live_check.skip_mutations():
             self.assertIn("allow-mutations", item.detail,
                           "a skipped mutation must say how to un-skip it")
@@ -127,6 +159,94 @@ class LiveGateTests(unittest.TestCase):
         # Only SKIPs produce 2, and any real attempt outranks a skip.
         self.assertNotEqual(live_check.exit_code(statuses(live_check.BLOCKED)), 2)
 
+    def test_the_json_flag_emits_only_json(self):
+        """A machine reads this flag; a human note on stdout breaks that.
+
+        The bug was found by running the CI step locally: the owner-token warning
+        was printed to stdout *before* the payload, so `--json | jq` died on line 1
+        and a workflow that only wanted verdicts got a parse error instead.
+        """
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("sys.stderr", new_callable=io.StringIO):
+                with redirect_stdout(buf):
+                    code = live_check.main(["--json"])
+        rows = json.loads(buf.getvalue())
+        self.assertEqual(code, 2, "an empty environment verified nothing and must not exit 0")
+        self.assertEqual({row["provider"] for row in rows},
+                         {"GitHub", "Vercel", "Render", "Google Drive"},
+                         "a provider missing from the report is a provider nobody "
+                         "will notice is unchecked")
+        self.assertTrue(all(row["status"] == live_check.SKIP for row in rows))
+
+    def test_the_workflows_reporting_step_is_a_real_program(self):
+        """The step that turns verdicts into annotations is tested, not trusted.
+
+        A workflow step is the one file in this repository no test executes. That
+        is how `if code in (1, 2)` ended up inside a python heredoc reading a *shell*
+        variable: it parsed, it looked right, and it raised NameError on every run
+        -- after printing the annotations, so the run would have been red for the
+        wrong reason and the summary right for the wrong one. This extracts the
+        embedded python and runs it, so the bug class is closed, not the instance.
+        """
+        run = self._run_reporting_step(3)
+        text, exit_code = run.stdout, run.returncode
+        self.assertIn("::warning title=live-Vercel-BLOCKED::", text)
+        self.assertIn("::error title=live-GitHub-FAIL::", text)
+        self.assertIn("::notice title=live-Render-SKIP::", text)
+        self.assertEqual(exit_code, 0, "exit 3 is a warning, not a red run")
+
+    def test_the_reporting_step_fails_for_a_refused_credential_and_an_empty_run(self):
+        """1 and 2 are red, 3 is not: the mapping is the contract, in words.
+
+        2 (nothing attempted) failing is the one that needs saying: a run that
+        verified nothing must not look like a run that verified nothing was wrong.
+        """
+        for checker_code, expected in ((1, 1), (2, 1), (3, 0), (0, 0)):
+            with self.subTest(checker_code=checker_code):
+                result = self._run_reporting_step(checker_code)
+                self.assertEqual(result.returncode, expected, result.stderr[-400:])
+
+    def _report_rows(self):
+        return [
+            {"provider": "GitHub", "operation": "GET workflow runs", "status": "FAIL",
+             "detail": "ghp_unauthorized: Bad credentials"},
+            {"provider": "Vercel", "operation": "GET deployments", "status": "BLOCKED",
+             "detail": "pre_http_network_failure: TLS/SSL connection has been closed"},
+            {"provider": "Render", "operation": "GET deploys", "status": "SKIP",
+             "detail": "missing RENDER_API_KEY, RENDER_SERVICE_ID"},
+        ]
+
+    def _run_reporting_step(self, checker_code):
+        import re
+        import subprocess
+        step = (ROOT / ".github" / "workflows" / "live-check.yml").read_text(encoding="utf-8")
+        block = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\n", step, re.S)
+        self.assertIsNotNone(block, "the reporting step no longer embeds a python "
+                                    "heredoc; update this test and the workflow together")
+        # Dedent the way YAML's block scalar will: the step's body is indented by
+        # ten spaces in the file, and a python parser is not obliged to guess.
+        script = textwrap.dedent(block.group(1))
+        # `code` must arrive from the environment; a bare shell name is the bug above.
+        self.assertIn('os.environ.get("LIVE_CHECK_CODE"', script)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "live.json"
+            report.write_text(json.dumps(self._report_rows()), encoding="utf-8")
+            summary = Path(tmp) / "summary.md"
+            summary.touch()
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, text=True,
+                env={**os.environ, "LIVE_CHECK_CODE": str(checker_code),
+                     "LIVE_CHECK_SOURCE": "job-token",
+                     "LIVE_CHECK_REPORT": str(report),
+                     "GITHUB_STEP_SUMMARY": str(summary)},
+            )
+            self.assertIn("GitHub credential source: `job-token`",
+                          summary.read_text(encoding="utf-8"),
+                          "the provenance note must reach the summary, not only the log")
+        return result
+
     def test_the_live_layer_is_off_by_default(self):
         # If this ever fails, someone exported WAHA_LIVE_INTEGRATIONS into CI, and
         # the suite started depending on credentials and upstream availability.
@@ -138,12 +258,18 @@ class LiveGateTests(unittest.TestCase):
 class LiveCredentialTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        absent = missing_credentials()
-        if absent:
-            raise unittest.SkipTest("missing " + ", ".join(sorted(set(absent))))
         cls.config = cfgmod.load()
+        cls.have = configured_providers(cls.config)
+        if not cls.have:
+            raise unittest.SkipTest("missing "
+                                    + ", ".join(sorted(set(missing_credentials()))))
         cls.service = IntegrationService(cls.config)
         cls.redact = redactmod.build_redactor(cls.config.secrets())
+
+    def require(self, provider):
+        """Skip only the tests whose provider has no credentials."""
+        if provider not in self.have:
+            raise unittest.SkipTest(f"{provider} is not configured here")
 
     def assertNoSecret(self, text):
         for secret in self.config.secrets():
@@ -151,6 +277,7 @@ class LiveCredentialTests(unittest.TestCase):
                 self.assertNotIn(secret, text)
 
     def test_github_workflow_runs_are_readable(self):
+        self.require("github")
         results = {item.operation: item
                    for item in live_check.check_reads(self.service, self.redact)}
         item = results["GET workflow runs"]
@@ -158,9 +285,26 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(item.status, "PASS", self.redact(item.detail))
 
     def test_vercel_deployments_are_readable(self):
+        self.require("vercel")
         results = {item.operation: item
                    for item in live_check.check_reads(self.service, self.redact)}
         item = results["GET deployments"]
+        self.assertNoSecret(item.detail)
+        self.assertEqual(item.status, "PASS", self.redact(item.detail))
+
+    def test_render_deploys_are_readable(self):
+        self.require("render")
+        item = {(row.provider, row.operation): row
+                for row in live_check.check_reads(self.service, self.redact)}[
+            ("Render", "GET deploys")]
+        self.assertNoSecret(item.detail)
+        self.assertEqual(item.status, "PASS", self.redact(item.detail))
+
+    def test_drive_folder_is_readable(self):
+        self.require("drive")
+        item = {(row.provider, row.operation): row
+                for row in live_check.check_reads(self.service, self.redact)}[
+            ("Google Drive", "GET folder")]
         self.assertNoSecret(item.detail)
         self.assertEqual(item.status, "PASS", self.redact(item.detail))
 

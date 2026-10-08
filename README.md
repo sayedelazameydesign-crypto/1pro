@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 452 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
+على `sqlite` و`postgres` معًا: 492 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 22 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -279,18 +279,26 @@ payload**؛ وما لم يُقرأ يُكتب «غير معروف» بلا لو�
 
 ## تكاملات المالك · `/integrations`
 
-صفحة إدارة واحدة خلف `/integrations`، تقرأ وتشغّل تكاملين فقط:
+صفحة إدارة واحدة خلف `/integrations`: أربعة تكاملات، وبطاقة قراءة وبطاقة كتابة لكل منها — ثمانِ بطاقات من باب واحد.
 
 | التكامل | قراءة | كتابة |
 |---|---|---|
 | GitHub Actions | `GET /api/owner/integrations/github/runs` — سجل التشغيلات | `POST /api/owner/integrations/github/dispatch` — تشغيل workflow |
 | Vercel | `GET /api/owner/integrations/vercel/deployments` — سجل النشرات | `POST /api/owner/integrations/vercel/deploy-hook` — نشر فعلي |
+| Render | `GET /api/owner/integrations/render/deploys` — سجل النشرات | `POST /api/owner/integrations/render/deploy-hook` — نشر فعلي (`deploy-render`) |
+| Google Drive | `GET /api/owner/integrations/drive/files` — ملفات المجلد | `POST /api/owner/integrations/drive/upload` — ملف نصي (`upload-drive`) |
 
-**الأسرار لا تغادر الخادم.** `GITHUB_*` و`VERCEL_*` و`DEPLOY_HOOK_*` تُقرأ في
+البوابة لا تتصل بشيء قبل أن يقرّر الخادم أنه مُهيّأ: تكاملٌ ناقص يجيب `503 not_configured`
+بأسماء المتغيرات الناقصة، ولا يُلَوَّن «جاهزًا» في البطاقات الثماني ولا يُستدعى مُشغّله.
+
+**الأسرار لا تغادر الخادم.** `GITHUB_*` و`VERCEL_*` و`DEPLOY_HOOK_*` و`RENDER_*` و`GOOGLE_DRIVE_*` تُقرأ في
 `backend/integrations/config.py`، و`describe()` ينشر أسماء المتغيرات وحالاتها فقط، وما
 يظهر في الواجهة بصمة SHA-256 رباعية الأطراف للرمز لا الرمز. وكل رسالة خطأ قادمة من
-GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المتصفح، ومسار الخروج في مدقّق الطبقة
+GitHub أو Vercel أو Render أو Drive تمرّ بمُحمِّر قبل أن تصل إلى المتصفح، ومسار الخروج في مدقّق الطبقة
 الحية يعيد فحص المحضر كاملًا قبل طباعته.
+
+**أقل صلاحية لكل credential** — من الـfine-grained PAT بتاع البوابة إلى رابط الـhook
+بتاع Render، مع «ماذا يحدث لو تسرّب» و«كيف تتحقق»: `CREDENTIALS.md`.
 
 **الحماية:** جلسة موقّعة بـHMAC تنتهي بعد 8 ساعات · CSRF مرتبط بالجلسة · قائمة CORS
 خاصة بالإدارة · Flask `TRUSTED_HOSTS` لمنع Host/DNS rebinding · فحص وحصر DNS لـDeploy Hook
@@ -301,19 +309,22 @@ GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المت�
 
 | الطبقة | الملف | ما تثبته |
 |---|---|---|
-| Unit | `tests/test_integrations_core.py` (56) | الإعداد والمُحمِّر وحراس النقل والعميلان، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx |
+| Unit | `tests/test_integrations_core.py` (56) + `tests/test_integrations_portal.py` (35) | الإعداد والمُحمِّر وحراس النقل والعملاء الأربعة، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx وتجديد رمز Drive |
 | Integration | `tests/test_integrations_api.py` (36) | الحافة كلها عبر عميل Flask: Host موثوق ضد DNS rebinding، ومن يُسمح له، ومن أي مصدر، وبأي CSRF أو تأكيد |
-| Live | `tests/test_integrations_live.py` (8) + `scripts/integrations_live_check.py` | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
+| Live | `tests/test_integrations_live.py` (13) + `scripts/integrations_live_check.py` (43 فحصًا لـ`--self-test`) | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
 
 الطبقة الحية معطّلة افتراضيًا ولا تعمل في CI:
 
 ```bash
-# القراءتان فقط (بلا تغيير في الحالة)
+# القراءات الأربع فقط (بلا تغيير في الحالة). يُشغَّل لكل مزوّد ما وُجدت له credentials،
+# وما لا يوجد يُبلَّغ عنه SKIP مسمّى، لا صمتًا.
 GITHUB_TOKEN=… GITHUB_REPO=… VERCEL_TOKEN=… VERCEL_PROJECT_ID=… \
-VERCEL_TEAM_ID=team_… \
+VERCEL_TEAM_ID=team_… RENDER_API_KEY=… RENDER_SERVICE_ID=… \
+GOOGLE_DRIVE_ACCESS_TOKEN=… \
   python scripts/integrations_live_check.py
 
-# والعمليتان الكتابيتان — تبدآن تشغيل CI فعليًا ونشرًا إنتاجيًا فعليًا
+# والكتابات الأربع — تشغّل CI فعلًا، وتطلق نشرًا إنتاجيًا على Vercel وRender،
+# وتكتب ملفًا في Drive المالك
 python scripts/integrations_live_check.py --allow-mutations
 
 # تشغيل الاختبارات الحية
@@ -322,6 +333,25 @@ WAHA_LIVE_INTEGRATIONS=1 python -m unittest tests.test_integrations_live
 # إثبات المدقّق نفسه بلا شبكة وبلا أسرار (هذا ما يشغّله CI)
 python scripts/integrations_live_check.py --self-test
 ```
+
+### ومن جهازك بلا مفاتيح: `Live check integrations (read-only)`
+
+الأمر أعلاه يحتاج شبكةً ومفاتيح، وsandbox الوكيل مسموح له بـ`github.com` وحده
+(`api.vercel.com` و`api.render.com` و`www.googleapis.com` تجيب `000` من هناك، وقد
+قِيست). لذلك القراءة نفسها workflow بيده: **Actions → Live check integrations
+(read-only) → Run workflow**. ياخد المفاتيح من أسرار المستودع، ولا يمرّر
+`--allow-mutations` إطلاقًا — لا في إعدادات الملف ولا في input يمكن الضغط عليه؛ النشر
+يظل قرار إنسان. ولا يُمرَّر `RENDER_DEPLOY_HOOK_URL` للـjob أصلًا: قراءةُ لا تملك
+وجهة نشر أفضل من قراءةٍ تطلب منها ألا تنشر.
+
+نتيجته تظهر في مكانين: جدول في run summary، وسطور annotations على الـjob — والقناة
+الثانية هي ما يستطيع الوكيل قراءته عبر
+`gh api …/check-runs/<id>/annotations`، بينما اللوج الخام يُخدَم من مضيف خارج قائمة السماح.
+
+**ما لا يثبته هذا الـworkflow:** إن لم يوجد سرّ `GITHUB_INTEGRATION_TOKEN` فإن صفّ
+GitHub يُوقَّع برمز الـjob التلقائي، فيبقى `partial`: يثبت أن رمزًا بصلاحيات
+`actions: read` يقرأ المستودع، لا أن الرمز المضبوط في البوابة يعمل. هذا مكتوب صريحًا
+في الـsummary وفي annotation مستقل، فلا يُقرَأ ذاك السطر كاعتماد على credential المالك.
 
 العمليتان الكتابيتان خلف `--allow-mutations` عمدًا: «تحقق من رموزي» يجب ألا يكون أمرًا
 مدمّرًا. ولا تُنفَّذان من أي اختبار، لأن مجموعة اختبارات لا يجوز أن تقرر نشر إنتاج نيابةً

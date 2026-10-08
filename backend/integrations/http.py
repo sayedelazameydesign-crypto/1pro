@@ -25,8 +25,12 @@ from urllib.parse import urlsplit
 
 from .config import normalize_hostname
 
-# Fixed vendor hosts. Deploy hooks are also issued under api.vercel.com.
-ALLOWED_API_HOSTS = frozenset({"api.github.com", "api.vercel.com"})
+# Fixed vendor hosts. Deploy hooks are also issued under api.vercel.com, and
+# Render's hook lives on api.render.com with its secret in the *query string* --
+# which is why the whole URL, not just a key, goes into ``config.secrets()``.
+# Drive needs two hosts because an OAuth refresh is a different origin from the API.
+ALLOWED_API_HOSTS = frozenset({"api.github.com", "api.vercel.com", "api.render.com",
+                               "www.googleapis.com", "oauth2.googleapis.com"})
 MAX_RESPONSE_BYTES = 512 * 1024
 
 # Failures that happen *before* an HTTP response exists. None of them is a verdict
