@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import sys
+import subprocess
 import tempfile
 import time
 import unittest
@@ -217,14 +218,78 @@ class StandaloneTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/register", json={}).status_code, 429)
 
     def test_cors_preflight_allowed_origin(self):
-        response = self.client.options("/api/sessions", headers={"Origin": "https://pages.test"})
-        self.assertEqual(response.status_code, 204)
-        self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), "https://pages.test")
-        self.assertIn("X-Waha-CSRF", response.headers.get("Access-Control-Allow-Headers", ""))
+        origin = "https://pages.test"
+        preflight = {"Origin": origin, "Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "authorization,content-type,x-waha-csrf"}
+        with patch.object(backend.urllib.request, "urlopen",
+                          side_effect=AssertionError("CORS must not call a provider")):
+            response = self.client.options("/api/sessions", headers=preflight)
+            self.assertEqual(response.status_code, 204)
+            self.assertEqual(response.headers.get("Access-Control-Allow-Origin"), origin)
+            allowed = {h.strip().lower() for h in response.headers.get(
+                "Access-Control-Allow-Headers", "").split(",")}
+            self.assertTrue({"authorization", "content-type", "x-waha-csrf"} <= allowed)
+            self.assertIn("POST", response.headers.get("Access-Control-Allow-Methods", ""))
+            self.assertIn("Origin", response.headers.get("Vary", ""))
+            # Bearer + CSRF, no cookies, must also work on the actual Pages POST.
+            data = self.register()
+            headers = {**self.auth_headers(data), "Origin": origin}
+            created = self.client.post("/api/sessions", json={"skill_id": "assistant"},
+                                       headers=headers)
+            self.assertEqual(created.status_code, 201)
+            self.assertEqual(created.headers.get("Access-Control-Allow-Origin"), origin)
+            self.assertNotIn("Set-Cookie", created.headers)
+            rejected = self.client.post("/api/sessions", json={"skill_id": "assistant"},
+                headers={"Authorization": headers["Authorization"], "Origin": origin})
+            self.assertEqual(rejected.status_code, 403)
+            self.assertEqual(rejected.get_json()["code"], "csrf_rejected")
+
+        # Exercise the actual shell preflight block without a live service or AI.
+        smoke = (ROOT / "scripts/smoke.sh").read_text()
+        block = smoke[smoke.index('echo "== CORS preflight'):smoke.index('echo "== a foreign')]
+        harness = r'''set -u
+BASE=https://backend.test
+ORIGIN=https://pages.test
+FAILED=0
+ok() { :; }
+bad() { FAILED=$((FAILED + 1)); }
+curl() {
+  case "$*" in
+    *"Access-Control-Request-Headers: authorization,content-type,x-waha-csrf"*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$TEST_HEADERS" > "$TMP/preflight.headers"
+  : > "$TMP/preflight.body"
+  printf '%s' "$TEST_STATUS"
+}
+'''
+        good = ("Access-Control-Allow-Origin: https://pages.test\r\n"
+                "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                "Access-Control-Allow-Headers: Authorization, Content-Type, X-Waha-CSRF\r\n")
+        cases = [(good, "204", 0), (good.lower(), "204", 0),
+                 (good.replace("Authorization, ", ""), "204", 1),
+                 (good.replace("X-Waha-CSRF", "X-Waha-CSRF-extra"), "204", 1),
+                 (good.replace("Content-Type, ", ""), "204", 1),
+                 (good.replace("GET, POST, OPTIONS", "GET, OPTIONS"), "204", 1),
+                 (good.replace("pages.test", "pagesXtest"), "204", 1),
+                 (good, "401", 1)]
+        with tempfile.TemporaryDirectory() as scratch:
+            for headers, status, expected in cases:
+                with self.subTest(headers=headers, status=status):
+                    result = subprocess.run(["bash", "-c", harness + block + '\nexit "$FAILED"'],
+                        env={**os.environ, "TMP": scratch, "TEST_HEADERS": headers,
+                             "TEST_STATUS": status}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
     def test_cors_not_echoed_for_evil_origin(self):
         response = self.client.get("/api/skills", headers={"Origin": "https://evil.invalid"})
         self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+        response = self.client.options("/api/sessions", headers={
+            "Origin": "https://evil.invalid", "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,x-waha-csrf"})
+        self.assertEqual(response.status_code, 204)
+        self.assertNotIn("Access-Control-Allow-Origin", response.headers)
+        self.assertNotIn("Access-Control-Allow-Headers", response.headers)
 
     def test_rate_limit_without_retry_after_uses_default(self):
         """A 429 with no Retry-After header must still produce a bounded wait."""

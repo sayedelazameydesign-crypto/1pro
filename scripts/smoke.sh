@@ -8,6 +8,10 @@
 # Notes:
 #   * Every call uses --max-time 90: the first request after Render free-tier
 #     idle can take ~50s (Render boot + Neon wake-up).
+#   * This is a live, state-changing test: the agent task can consume Gemini quota.
+#     For a quota-free CORS check, use the OPTIONS command in DEPLOY-VERCEL.md.
+#   * Use the stable production domain. An immutable deployment URL may be behind
+#     Vercel Deployment Protection; a platform 401 is not proof of an app failure.
 #   * The visitor token is never printed; only its presence is reported.
 #   * /api/register is capped at 5 per hour per IP on purpose, so a second run in the
 #     same hour would otherwise stop at the identity step. Re-use a visitor instead:
@@ -52,11 +56,28 @@ fi
 echo "== CORS preflight from the Pages origin =="
 code="$(curl -sS --max-time 90 -D "$TMP/preflight.headers" -o "$TMP/preflight.body" -w '%{http_code}' \
   -X OPTIONS -H "Origin: $ORIGIN" -H 'Access-Control-Request-Method: POST' \
-  -H 'Access-Control-Request-Headers: content-type,x-waha-csrf' "$BASE/api/sessions" || echo 000)"
-if [ "$code" = "204" ] && grep -qi "^access-control-allow-origin: *$ORIGIN" "$TMP/preflight.headers"; then
-  ok "preflight 204 with Access-Control-Allow-Origin: $ORIGIN"
+  -H 'Access-Control-Request-Headers: authorization,content-type,x-waha-csrf' "$BASE/api/sessions" || echo 000)"
+# Compare the origin literally (not as a grep regex), and headers/methods as
+# case-insensitive comma-separated tokens. A 204 alone is not a browser pass.
+header_value() {
+  awk -v name="$1" '
+    { sub(/\r$/, "") }
+    tolower($1) == tolower(name) ":" {
+      sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print
+    }' "$TMP/preflight.headers"
+}
+header_has_token() {
+  header_value "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -Fxiq -- "$2"
+}
+if [ "$code" = "204" ] \
+   && [ "$(header_value Access-Control-Allow-Origin)" = "$ORIGIN" ] \
+   && header_has_token Access-Control-Allow-Methods POST \
+   && header_has_token Access-Control-Allow-Headers Authorization \
+   && header_has_token Access-Control-Allow-Headers Content-Type \
+   && header_has_token Access-Control-Allow-Headers X-Waha-CSRF; then
+  ok "preflight 204 allows exact Pages origin, POST, Authorization, Content-Type and X-Waha-CSRF"
 else
-  bad "preflight returned $code; headers: $(tr -d '\r' < "$TMP/preflight.headers" | tr '\n' ' ')"
+  bad "preflight returned $code or omitted required CORS permissions; headers: $(tr -d '\r' < "$TMP/preflight.headers" | tr '\n' ' ')"
 fi
 
 echo "== a foreign origin must not be echoed =="

@@ -1,14 +1,32 @@
-# النشر على Vercel (خطة Hobby) + Neon — بلا بطاقة ائتمان
+# النشر على Vercel (خطة Hobby) + Neon — مشروط بالتحقق من عدم طلب بطاقة
 
 دليل تشغيل مختصر. الشرح الكامل والقيود في `README.md` → «بديل النشر: Vercel (خطة Hobby)»،
 والقرار المعماري في `ARCHITECTURE.md` → «النشر على المجاني». هذا الملف لا يكرّرهما، بل يجمع
 الخطوات في مكان واحد.
 
-## ما تحصل عليه فعلاً (بلا بطاقة)
+## شرط المتابعة: التحقق من اللوحة
+
+حالة GitHub/Vercel `Production: success` تعني اكتمال النشر المسجّل فقط؛ لا تثبت عمل
+الموقع ولا غياب مطالبة بطاقة أو خطة مدفوعة في الحساب الحالي.
+
+- **لم يُتحقق بعد:** لا تبدأ نشرًا جديدًا، ولا تشغّل workflow مزامنة المفاتيح؛ فهو يعيد النشر.
+- **لا مطالبة بطاقة:** اضبط `DATABASE_URL` و`GEMINI_API_KEY` و`WAHA_ALLOWED_ORIGINS`
+  و`WAHA_SECRET` من Settings → Environment Variables → Production، دون وضع القيم في
+  الدردشة أو المستودع. بعدها فقط تابع النشر والتحقق من Pages.
+- **ظهرت مطالبة بطاقة/خطة مدفوعة:** أوقف مسار Vercel؛ لا تضف بطاقة ولا ترقِّ الخطة.
+  قيّم Cloudflare كبديل قبل أي انتقال. Pages يمكن أن تستضيف الواجهة الساكنة، لكن نقل
+  خادم Flask الحالي يحتاج إثبات توافق runtime أو تكييفه؛ تحقق من دعم Flask/WSGI
+  و`psycopg` واتصال Neon، ومن حدود الزمن والتخزين المؤقت والمصادقة وCORS.
+  لا تعتبر نقل ملفات الواجهة نشرًا لخادم المحادثة، ولا تدّعِ أن البديل بلا بطاقة قبل التحقق.
+
+لم تُؤكَّد حالة الفوترة لهذا الحساب من اللوحة. وصف الخطة أدناه ليس تأكيدًا لها.
+المسار المستقل يستخدم Gemini؛ NVIDIA متاح عبر PromptQL فقط.
+
+## الخطة المستهدفة (تُراجع شروطها قبل الاعتماد)
 
 | البند | القيمة |
 |---|---|
-| السعر | Hobby = 0$ دائمًا، **بلا بطاقة ائتمان**، والحساب لا يُفوتر أصلاً |
+| السعر المستهدف | Hobby = 0$؛ تأكد من اللوحة أن المشروع لا يطلب بطاقة أو خطة مدفوعة قبل المتابعة |
 | الشرط | **شخصي/غير تجاري فقط**؛ أي استخدام تجاري يحتاج Pro (20$/مقعد) |
 | عند التجاوز | تُوقف الميزة حتى نافذة الـ30 يومًا التالية — لا فاتورة مفاجئة |
 | الحدود | 100GB نقل · 1M استدعاء دالة · 1M طلب edge · 100 نشر/يوم |
@@ -74,12 +92,28 @@ vercel` يعتبر الكتابة إلى `/api/index` **خطأً** لا تحذي
 # قبل: صحة البيئة (بلا شبكة، وبلا طباعة أي مفتاح)
 python scripts/deploy_doctor.py --env-file service.env --target vercel
 
-# بعد أول نشر: سموك كامل يفحص R1→R6 على الخادم الحيّ
+# بعد نشر مسموح: استخدم نطاق الإنتاج الثابت من Settings → Domains
+# فحص CORS فقط: لا يستدعي Gemini ولا يحتاج Bearer فعليًا في OPTIONS
+curl -sS --max-time 60 -i -X OPTIONS \
+  -H 'Origin: https://sayedelazameydesign-crypto.github.io' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: authorization,content-type,x-waha-csrf' \
+  https://<app>.vercel.app/api/sessions
+
+# السموك الكامل يفحص R1→R6، يكتب بيانات اختبار وقد يستهلك حصة Gemini
 scripts/smoke.sh https://<app>.vercel.app
 curl -sS --max-time 60 -o /dev/null -w '%{http_code}\n' https://<app>.vercel.app/   # 200 واجهة Flask
 curl -sS --max-time 60 https://<app>.vercel.app/health
 curl -sS --max-time 60 -i https://<app>.vercel.app/readyz     # 204 بلا جسم
 ```
+
+فحص CORS ينجح عند `204` مع الأصل مطابقًا تمامًا، والسماح بـ`POST` وبالترويسات الثلاث
+`Authorization` و`Content-Type` و`X-Waha-CSRF`. المصادقة Bearer + CSRF، لا كوكيز.
+
+رابط النشر المحدد مثل `cela-9wxj9z9ae-…vercel.app` ليس نطاق الإنتاج الثابت؛ قد تحجبه
+Deployment Protection. إذا حصلت على `401` من المنصة، راجع Settings → Deployment
+Protection ونطاق الإنتاج قبل تشخيص عطل Flask. لا تعطّل حماية الروابط الخاصة تلقائيًا؛
+يجب أن يكون API المقصود لواجهة Pages العامة متاحًا لها دون شاشة دخول Vercel.
 
 - `/` رجع **404 من Flask** (Not Found بصفحة Werkzeug)؟ عاد `rewrites` — احذفه.
 - `/` رجع **404 من Vercel** (`404: NOT_FOUND`)؟ المشروع ليس في وضع Flask: بدّل
