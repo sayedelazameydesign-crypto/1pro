@@ -101,7 +101,10 @@ jobs:
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
           WAHA_ORIGINS: ${{ secrets.WAHA_ORIGINS }}
           CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN || vars.VERCEL_TOKEN }}
+          # Secrets only: a Vercel token stored as a variable is readable by anyone with
+          # repository access, so there is deliberately no `vars.` fallback here. The
+          # step above warns when the token is still stored as a variable.
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_API_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
           VERCEL_ACCESS_TOKEN: ${{ secrets.VERCEL_ACCESS_TOKEN }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID || vars.VERCEL_PROJECT_ID }}
