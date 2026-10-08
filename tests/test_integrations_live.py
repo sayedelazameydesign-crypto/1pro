@@ -1,4 +1,4 @@
-"""Layer 3 — live: real calls to GitHub and Vercel.
+"""Layer 3 — live: real calls to GitHub, Vercel, Render and Google Drive.
 
 Skipped unless the operator asks for it, because a test that reaches a third
 party's API is not a test CI can own: it depends on credentials, on rate limits,
@@ -17,9 +17,13 @@ dispatch`` and the deploy hook change real state; those are exercised by
 decided that starting a CI run and shipping a deployment right now is what they
 want. A test suite must not make that decision on its own.
 """
+import io
+import json
 import os
 import sys
 import unittest
+from unittest import mock
+from contextlib import redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +39,17 @@ import integrations_live_check as live_check       # noqa: E402
 LIVE = os.environ.get("WAHA_LIVE_INTEGRATIONS", "") == "1"
 
 
+PROVIDERS = ("github", "vercel", "render", "drive")
+
+
 def missing_credentials():
+    """The variable *names* still missing, across every provider.
+
+    Reported per provider on purpose. The first version of this file skipped the
+    whole class when any one credential was absent, which quietly turned the live
+    layer off for the providers that *were* configured -- the same failure shape
+    the checker itself had, and the reason the gate is now per operation.
+    """
     config = cfgmod.load()
     absent = []
     if not config.github.configured:
@@ -43,7 +57,16 @@ def missing_credentials():
     if not config.vercel.configured:
         absent.extend(name for name in config.vercel.missing()
                       if name != "DEPLOY_HOOK_URL")
+    if not config.render.configured:
+        absent.extend(name for name in config.render.missing()
+                      if name != "RENDER_DEPLOY_HOOK_URL")
+    if not config.drive.configured:
+        absent.extend(config.drive.missing())
     return absent
+
+
+def configured_providers(config):
+    return {name for name in PROVIDERS if getattr(config, name).configured}
 
 
 class LiveGateTests(unittest.TestCase):
@@ -52,9 +75,15 @@ class LiveGateTests(unittest.TestCase):
     failure this class pins."""
 
     def test_the_checker_skips_mutations_unless_asked(self):
-        skipped = {item.operation: item.status
+        # Keyed by (provider, operation): two providers have a "deploy hook", and a
+        # dict keyed on the operation name alone would let one row stand in for the
+        # other -- a skip that reads as two skips.
+        skipped = {(item.provider, item.operation): item.status
                    for item in live_check.skip_mutations()}
-        self.assertEqual(skipped, {"workflow dispatch": "SKIP", "deploy hook": "SKIP"})
+        self.assertEqual(skipped, {("GitHub", "workflow dispatch"): "SKIP",
+                                   ("Vercel", "deploy hook"): "SKIP",
+                                   ("Render", "deploy hook"): "SKIP",
+                                   ("Google Drive", "create probe file"): "SKIP"})
         for item in live_check.skip_mutations():
             self.assertIn("allow-mutations", item.detail,
                           "a skipped mutation must say how to un-skip it")
@@ -127,6 +156,26 @@ class LiveGateTests(unittest.TestCase):
         # Only SKIPs produce 2, and any real attempt outranks a skip.
         self.assertNotEqual(live_check.exit_code(statuses(live_check.BLOCKED)), 2)
 
+    def test_the_json_flag_emits_only_json(self):
+        """A machine reads this flag; a human note on stdout breaks that.
+
+        The bug was found by running the CI step locally: the owner-token warning
+        was printed to stdout *before* the payload, so `--json | jq` died on line 1
+        and a workflow that only wanted verdicts got a parse error instead.
+        """
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("sys.stderr", new_callable=io.StringIO):
+                with redirect_stdout(buf):
+                    code = live_check.main(["--json"])
+        rows = json.loads(buf.getvalue())
+        self.assertEqual(code, 2, "an empty environment verified nothing and must not exit 0")
+        self.assertEqual({row["provider"] for row in rows},
+                         {"GitHub", "Vercel", "Render", "Google Drive"},
+                         "a provider missing from the report is a provider nobody "
+                         "will notice is unchecked")
+        self.assertTrue(all(row["status"] == live_check.SKIP for row in rows))
+
     def test_the_live_layer_is_off_by_default(self):
         # If this ever fails, someone exported WAHA_LIVE_INTEGRATIONS into CI, and
         # the suite started depending on credentials and upstream availability.
@@ -138,12 +187,18 @@ class LiveGateTests(unittest.TestCase):
 class LiveCredentialTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        absent = missing_credentials()
-        if absent:
-            raise unittest.SkipTest("missing " + ", ".join(sorted(set(absent))))
         cls.config = cfgmod.load()
+        cls.have = configured_providers(cls.config)
+        if not cls.have:
+            raise unittest.SkipTest("missing "
+                                    + ", ".join(sorted(set(missing_credentials()))))
         cls.service = IntegrationService(cls.config)
         cls.redact = redactmod.build_redactor(cls.config.secrets())
+
+    def require(self, provider):
+        """Skip only the tests whose provider has no credentials."""
+        if provider not in self.have:
+            raise unittest.SkipTest(f"{provider} is not configured here")
 
     def assertNoSecret(self, text):
         for secret in self.config.secrets():
@@ -151,6 +206,7 @@ class LiveCredentialTests(unittest.TestCase):
                 self.assertNotIn(secret, text)
 
     def test_github_workflow_runs_are_readable(self):
+        self.require("github")
         results = {item.operation: item
                    for item in live_check.check_reads(self.service, self.redact)}
         item = results["GET workflow runs"]
@@ -158,9 +214,26 @@ class LiveCredentialTests(unittest.TestCase):
         self.assertEqual(item.status, "PASS", self.redact(item.detail))
 
     def test_vercel_deployments_are_readable(self):
+        self.require("vercel")
         results = {item.operation: item
                    for item in live_check.check_reads(self.service, self.redact)}
         item = results["GET deployments"]
+        self.assertNoSecret(item.detail)
+        self.assertEqual(item.status, "PASS", self.redact(item.detail))
+
+    def test_render_deploys_are_readable(self):
+        self.require("render")
+        item = {(row.provider, row.operation): row
+                for row in live_check.check_reads(self.service, self.redact)}[
+            ("Render", "GET deploys")]
+        self.assertNoSecret(item.detail)
+        self.assertEqual(item.status, "PASS", self.redact(item.detail))
+
+    def test_drive_folder_is_readable(self):
+        self.require("drive")
+        item = {(row.provider, row.operation): row
+                for row in live_check.check_reads(self.service, self.redact)}[
+            ("Google Drive", "GET folder")]
         self.assertNoSecret(item.detail)
         self.assertEqual(item.status, "PASS", self.redact(item.detail))
 
