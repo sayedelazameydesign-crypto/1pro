@@ -1,0 +1,153 @@
+/* Vercel Marketplace dashboard. Separate from integrations.css on purpose: that
+ * page is the owner driving our own CI and deploys, this one is a customer
+ * looking at the resources Vercel provisioned for them. Different audience,
+ * different cascade -- and neither should be able to restyle the other. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f5f2;
+  --panel: #ffffff;
+  --ink: #1b1a17;
+  --muted: #6b6862;
+  --line: #e2ded6;
+  --accent: #2f6f4f;
+  --ok: #2f6f4f;
+  --bad: #a33a2c;
+  --pending: #96690f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14140f;
+    --panel: #1d1d18;
+    --ink: #f1efe9;
+    --muted: #a8a49a;
+    --line: #33322b;
+    --accent: #8fd3ab;
+    --ok: #8fd3ab;
+    --bad: #e08b7c;
+    --pending: #dfb45f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 16px 64px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Noto Kufi Arabic", "Segoe UI", system-ui, sans-serif;
+  line-height: 1.7;
+}
+
+.shell { max-width: 940px; margin: 0 auto; }
+
+header.top {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  align-items: baseline; justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px; margin-bottom: 20px;
+}
+
+header.top h1 { margin: 0; font-size: 1.5rem; }
+
+.crumb { color: var(--muted); font-size: 0.85rem; }
+.crumb a { color: var(--accent); }
+
+.notice, .warn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 0 0 20px;
+}
+
+.warn { border-color: var(--pending); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+
+.panel > h2, .panel-head h2 { margin-top: 0; font-size: 1.05rem; }
+
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg);
+}
+
+.card header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+
+.card h3 { margin: 0 0 6px; font-size: 0.98rem; }
+
+.chip {
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.78rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chip[data-state="ready"], .chip[data-state="active"] {
+  color: var(--ok); border-color: var(--ok);
+}
+
+.chip[data-state="uninstalled"], .chip[data-state="error"] {
+  color: var(--bad); border-color: var(--bad);
+}
+
+.chip[data-state="pending"], .chip[data-state="onboarding"] {
+  color: var(--pending); border-color: var(--pending);
+}
+
+.facts, .tight { list-style: none; margin: 10px 0 0; padding: 0; }
+
+.facts li {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  justify-content: space-between;
+  border-bottom: 1px dashed var(--line);
+  padding: 5px 0;
+  font-size: 0.9rem;
+}
+
+.facts li span { color: var(--muted); }
+.facts li b, .facts li code { text-align: left; direction: ltr; word-break: break-all; }
+
+code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 0.82rem;
+  direction: ltr;
+}
+
+.hint { color: var(--muted); font-size: 0.82rem; margin: 10px 0 0; }
+
+.empty { color: var(--muted); font-size: 0.9rem; margin: 12px 0 0; }
+
+.events { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+
+.events th, .events td {
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 6px;
+}
+
+.events th { color: var(--muted); font-weight: 600; }
