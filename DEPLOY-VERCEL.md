@@ -126,7 +126,7 @@ Protection ونطاق الإنتاج قبل تشخيص عطل Flask. لا تعط
 
 Vercel لا يقرأ أسرار GitHub، فالنقل يحتاج وسيطًا يعمل في مكان يرى فيه الاثنان.
 الوسيط هو `scripts/vercel_env_sync.sh` عبر workflow **Sync production keys to Vercel**
-(تشغيل يدوي: Actions → Run workflow). يفعل أربعة أشياء بالترتيب:
+(تشغيل يدوي: Actions → Run workflow). يفعل أربعة أشياء بالترتيب، والرابع اختياري:
 
 1. يقرأ الأسرار من بيئة المُشغِّل (المكان الوحيد الذي تُكشف فيه قيم الأسرار).
 2. يتحقق من كل قيمة فعليًا: اتصال PostgreSQL حقيقي بـ`SELECT 1` (بثلاث محاولات، ويفرّق
@@ -136,8 +136,9 @@ Vercel لا يقرأ أسرار GitHub، فالنقل يحتاج وسيطًا ي
    ويسأل `/v2/teams` عمّا يراه الرمز فعلًا، فلا تمرّ قيمة `VERCEL_TEAM_ID` خاطئة إلى
    نداء مقيّد (التفصيل أدناه).
 3. يكتب المتغيّرات على مشروع Vercel (Production) ويكرّر الكتابة بأمان (upsert).
-4. يعيد نشر الإنتاج ثم يفحص الحيّ: `/health` (`ai:gemini` و`database:postgres`)،
-   و`/readyz`، وترويسة CORS لأصل Pages.
+4. عند تفعيل `redeploy` فقط (معطّل افتراضيًا): يعيد نشر الإنتاج ثم يفحص الحيّ: `/health`
+   (`ai:gemini` و`database:postgres`)، و`/readyz`، وترويسة CORS لأصل Pages. بدونه تُكتب القيم
+   على Vercel ولا تصل الحيّ قبل أي نشر جديد، والسكربت يقول ذلك صراحةً في آخر سطر.
 
 **لا تُطبع أي قيمة أبدًا**: كل سطر يمرّ عبر مُنقِّح يحوّل القيمة إلى `***`، والقيمة
 تُقرأ من متغيّر البيئة لا من وسيط سطر أوامر. الأسماء التي يبحث عنها، بالترتيب:
@@ -166,7 +167,8 @@ Vercel لا يقرأ أسرار GitHub، فالنقل يحتاج وسيطًا ي
    `NEON_PROJECT_ID` حينها.
 
 مفاتيح اختيارية: `NEON_PROJECT_ID` · `NEON_ROLE` (الافتراضي `neondb_owner`) ·
-`NEON_DATABASE` (الافتراضي `neondb`) · وللتعطيل: `scripts/vercel_env_sync.sh --no-neon-fetch`.
+`NEON_DATABASE` (الافتراضي `neondb`) · وللتعطيل: `scripts/vercel_env_sync.sh --no-neon-fetch`. وللنشر بعد الكتابة محليًا: `GITHUB_REPO_ID` (المعرّف الرقمي للمستودع) مع
+`scripts/vercel_env_sync.sh --redeploy`.
 لا يُكتب شيء إلى GitHub: القيمة تُشتق على المُشغِّل وتُرسل إلى Vercel مباشرة، فيبقى
 GitHub مصدر الحقيقة للأسرار الأخرى، والتحقق الحيّ هو الشرط قبل الكتابة.
 
@@ -176,7 +178,8 @@ GitHub مصدر الحقيقة للأسرار الأخرى، والتحقق ال
    النطاق (Scope) = الفريق المالك للمشروع (`celia-fashion's projects`) → أنشئه.
 2. GitHub → المستودع → Settings → Secrets and variables → Actions →
    New repository secret → الاسم **`VERCEL_TOKEN`** حرفيًا → الصق الرمز.
-3. Actions → **Sync production keys to Vercel** → Run workflow.
+3. Actions → **Sync production keys to Vercel** → Run workflow. اترك `redeploy` معطّلًا إن
+   أردت الكتابة فقط، أو فعّله لتصل القيم إلى الحيّ في التشغيل نفسه (الافتراضي: معطّل).
 
 > بديل بلا رمز: الصق القيم بنفسك في Vercel → Project → Settings → Environment
 > Variables (Production) ثم اعمل Redeploy. الأول أصحّ لأن GitHub يبقى مصدر الحقيقة

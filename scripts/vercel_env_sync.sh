@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Push the production secrets from GitHub Actions secrets to Vercel, then redeploy
-# and verify the live service.
+# Push the production secrets from GitHub Actions secrets to Vercel. With --redeploy
+# it also redeploys main to Production and verifies the live service.
 #
 # Why a script instead of a few curl lines inside the workflow:
 #   * nothing is ever printed -- every line that could carry a value goes through
@@ -10,7 +10,8 @@
 #
 # Usage:
 #   scripts/vercel_env_sync.sh --dry-run     # validate only, touch nothing
-#   scripts/vercel_env_sync.sh               # validate, push to Vercel, redeploy
+#   scripts/vercel_env_sync.sh               # validate, push to Vercel; no redeploy
+#   scripts/vercel_env_sync.sh --redeploy    # the same, then redeploy main and verify live
 #   scripts/vercel_env_sync.sh --self-test   # offline: prove the redactor and matcher
 #
 # --dry-run validates the values *and* resolves the Vercel team and project, because
@@ -33,18 +34,22 @@
 #   NEON_PROJECT_ID | NEON_ROLE | NEON_DATABASE (optional knobs for that derivation;
 #                                               defaults: the only project, neondb_owner,
 #                                               neondb)
-#   GITHUB_REPO_ID                            (only needed to trigger the redeploy)
+#   GITHUB_REPO_ID                            (only with --redeploy)
 #   WAHA_SERVICE_URL                          (default: https://cela-umber.vercel.app)
 set -uo pipefail
 
 DRY_RUN=0
 NEON_FETCH=1
 SELF_TEST=0
+# Off by default: a value written to Vercel reaches the live service only through a new
+# deployment, and that deployment is started only when asked for.
+REDEPLOY=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --no-neon-fetch) NEON_FETCH=0 ;;
     --self-test) SELF_TEST=1 ;;
+    --redeploy) REDEPLOY=1 ;;
   esac
 done
 
@@ -105,8 +110,9 @@ else:
 }
 
 FAILED=0
+WARNED=0
 ok() { printf 'PASS  %s\n' "$1"; }
-warn() { printf 'WARN  %s\n' "$1"; }
+warn() { printf 'WARN  %s\n' "$1"; WARNED=$((WARNED + 1)); }
 miss() { printf 'MISS  %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; FAILED=$((FAILED + 1)); }
 have() { [ -n "${1:-}" ]; }
@@ -682,8 +688,13 @@ push_var WAHA_ALLOWED_ORIGINS "$WAHA_ALLOWED_ORIGINS"
 echo
 
 echo "== 5/5 Redeploy and verify the live service"
+DEPLOY_STARTED=0
+WARNED=0
 if [ "$PUSHED" -eq 0 ]; then
   warn "nothing was written (no value was available); skipping the redeploy"
+elif [ "$REDEPLOY" != "1" ]; then
+  warn "redeploy is off (the default): $PUSHED value(s) were written, but the running deployment keeps its old values"
+  warn "re-run with redeploy=true (or --redeploy), or redeploy main from the Vercel dashboard"
 else
   if have "${GITHUB_REPO_ID:-}"; then
     body="$(P="$PROJECT_ID" N="$PROJECT_NAME" R="$GITHUB_REPO_ID" python3 -c '
@@ -693,6 +704,7 @@ print(json.dumps({"name": os.environ["N"], "project": os.environ["P"], "target":
     call POST "/v13/deployments?$TEAM_QUERY&forceNew=1" "$body"
     if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
       DEPLOY_ID="$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')"
+      DEPLOY_STARTED=1
       ok "redeploy queued on main so the new variables reach production"
       state=""
       for _ in $(seq 1 60); do
@@ -716,8 +728,16 @@ fi
 
 echo
 echo "== Live verification ($SERVICE_URL)"
+# Waiting is only worth it for a deployment this run started. Without one, the check
+# reads what is live now, once, instead of retrying for five minutes.
+attempts=1
+if [ "$DEPLOY_STARTED" = "1" ]; then
+  attempts=20
+else
+  echo "note: no redeploy started in this run, so this reads the deployment that is live now"
+fi
 health=""
-for _ in $(seq 1 20); do
+for _ in $(seq 1 "$attempts"); do
   health="$(curl -sS --max-time 60 "$SERVICE_URL/health?probe=$(date +%s)" 2>/dev/null || true)"
   have "$health" || { sleep 15; continue; }
   echo "$health" | grep -q '"ok": *true' || { sleep 15; continue; }
@@ -751,4 +771,12 @@ if [ "$FAILED" -gt 0 ]; then
   echo "$FAILED check(s) failed."
   exit 1
 fi
-echo "Sync finished: every value that exists in GitHub is now on Vercel and verified live."
+if [ "$DEPLOY_STARTED" = "1" ] && [ "$WARNED" -eq 0 ]; then
+  echo "Sync finished: every value that exists in GitHub is now on Vercel and verified live."
+elif [ "$DEPLOY_STARTED" = "1" ]; then
+  echo "Sync finished: the values are on Vercel and a redeploy ran, but warnings were printed after it, so the service is not confirmed live."
+elif [ "$PUSHED" -eq 0 ]; then
+  echo "Sync finished: nothing was written to Vercel, so the running deployment is unchanged."
+else
+  echo "Sync finished: the values are on Vercel but NOT live yet: no redeploy started in this run."
+fi

@@ -4,8 +4,9 @@ name: Sync production keys to Vercel
 # and Vercel cannot read GitHub secrets. This workflow is the bridge: a runner is
 # the only place GitHub exposes secret *values*, so it reads them there, validates
 # every one of them, writes them into the Vercel project as Production variables,
-# redeploys, and verifies the live service. It never prints a value: the script it
-# calls redacts every line it emits (see scripts/vercel_env_sync.sh).
+# and, only when the redeploy input is on, redeploys and verifies the live service.
+# It never prints a value: the script it calls redacts every line it emits (see
+# scripts/vercel_env_sync.sh).
 #
 # Nothing of the repository is modified. Run it by hand: Actions -> Sync production
 # keys to Vercel -> Run workflow. Documented in DEPLOY-VERCEL.md -> "المفاتيح".
@@ -14,6 +15,10 @@ on:
     inputs:
       dry_run:
         description: "Validate the secrets only; change nothing on Vercel"
+        type: boolean
+        default: false
+      redeploy:
+        description: "Redeploy main to Production after writing the values. Off by default: the values are written, but the running deployment keeps its old ones until a redeploy"
         type: boolean
         default: false
 
@@ -108,16 +113,16 @@ jobs:
           VERCEL_PROJECT_NAME: ${{ vars.VERCEL_PROJECT_NAME }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID || vars.VERCEL_TEAM_ID }}
           VERCEL_TEAM_SLUG: ${{ vars.VERCEL_TEAM_SLUG }}
-          GITHUB_REPO_ID: ${{ github.event.repository.id }}
+          # Passed only with the redeploy input: a run without it has no repository id to
+          # build a deployment from, so it cannot start one.
+          GITHUB_REPO_ID: ${{ inputs.redeploy && github.event.repository.id || '' }}
         run: |
           set -uo pipefail
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            scripts/vercel_env_sync.sh --dry-run 2>&1 | tee /tmp/sync.log
-            status="${PIPESTATUS[0]}"
-          else
-            scripts/vercel_env_sync.sh 2>&1 | tee /tmp/sync.log
-            status="${PIPESTATUS[0]}"
-          fi
+          args=()
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
+          if [ "${{ inputs.redeploy }}" = "true" ]; then args+=(--redeploy); fi
+          scripts/vercel_env_sync.sh "${args[@]}" 2>&1 | tee /tmp/sync.log
+          status="${PIPESTATUS[0]}"
           echo "script-exit=$status"
           exit "$status"
         continue-on-error: true
