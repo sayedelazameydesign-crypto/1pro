@@ -36,7 +36,7 @@ RENDER_HOOK = "https://api.render.com/deploy/srv-9zxc?key=supersecretkeyvalue"
 DRIVE_REFRESH = "1//0fakeRefreshTokenValueForTestsOnly"
 DRIVE_ACCESS = "ya29.a0fakeAccessTokenValueForTestsOnly"
 DRIVE_CLIENT_SECRET = "GOCSPX-fakeClientSecret"
-DRIVE_FOLDER = "1tb_cBlKZwKy98Ug"
+DRIVE_FOLDER = "1FakeFolderIdForTestsOnlyAAAAAAAAAAA"
 
 # Every variable the portal knows about. A provider missing from this dict is what
 # ``load({})`` reports as unconfigured, and the tests below depend on that.
