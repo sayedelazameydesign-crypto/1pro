@@ -20,7 +20,10 @@ want. A test suite must not make that decision on its own.
 import io
 import json
 import os
+import subprocess
 import sys
+import textwrap
+import tempfile
 import unittest
 from unittest import mock
 from contextlib import redirect_stdout
@@ -175,6 +178,74 @@ class LiveGateTests(unittest.TestCase):
                          "a provider missing from the report is a provider nobody "
                          "will notice is unchecked")
         self.assertTrue(all(row["status"] == live_check.SKIP for row in rows))
+
+    def test_the_workflows_reporting_step_is_a_real_program(self):
+        """The step that turns verdicts into annotations is tested, not trusted.
+
+        A workflow step is the one file in this repository no test executes. That
+        is how `if code in (1, 2)` ended up inside a python heredoc reading a *shell*
+        variable: it parsed, it looked right, and it raised NameError on every run
+        -- after printing the annotations, so the run would have been red for the
+        wrong reason and the summary right for the wrong one. This extracts the
+        embedded python and runs it, so the bug class is closed, not the instance.
+        """
+        run = self._run_reporting_step(3)
+        text, exit_code = run.stdout, run.returncode
+        self.assertIn("::warning title=live-Vercel-BLOCKED::", text)
+        self.assertIn("::error title=live-GitHub-FAIL::", text)
+        self.assertIn("::notice title=live-Render-SKIP::", text)
+        self.assertEqual(exit_code, 0, "exit 3 is a warning, not a red run")
+
+    def test_the_reporting_step_fails_for_a_refused_credential_and_an_empty_run(self):
+        """1 and 2 are red, 3 is not: the mapping is the contract, in words.
+
+        2 (nothing attempted) failing is the one that needs saying: a run that
+        verified nothing must not look like a run that verified nothing was wrong.
+        """
+        for checker_code, expected in ((1, 1), (2, 1), (3, 0), (0, 0)):
+            with self.subTest(checker_code=checker_code):
+                result = self._run_reporting_step(checker_code)
+                self.assertEqual(result.returncode, expected, result.stderr[-400:])
+
+    def _report_rows(self):
+        return [
+            {"provider": "GitHub", "operation": "GET workflow runs", "status": "FAIL",
+             "detail": "ghp_unauthorized: Bad credentials"},
+            {"provider": "Vercel", "operation": "GET deployments", "status": "BLOCKED",
+             "detail": "pre_http_network_failure: TLS/SSL connection has been closed"},
+            {"provider": "Render", "operation": "GET deploys", "status": "SKIP",
+             "detail": "missing RENDER_API_KEY, RENDER_SERVICE_ID"},
+        ]
+
+    def _run_reporting_step(self, checker_code):
+        import re
+        import subprocess
+        step = (ROOT / ".github" / "workflows" / "live-check.yml").read_text(encoding="utf-8")
+        block = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\n", step, re.S)
+        self.assertIsNotNone(block, "the reporting step no longer embeds a python "
+                                    "heredoc; update this test and the workflow together")
+        # Dedent the way YAML's block scalar will: the step's body is indented by
+        # ten spaces in the file, and a python parser is not obliged to guess.
+        script = textwrap.dedent(block.group(1))
+        # `code` must arrive from the environment; a bare shell name is the bug above.
+        self.assertIn('os.environ.get("LIVE_CHECK_CODE"', script)
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "live.json"
+            report.write_text(json.dumps(self._report_rows()), encoding="utf-8")
+            summary = Path(tmp) / "summary.md"
+            summary.touch()
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, text=True,
+                env={**os.environ, "LIVE_CHECK_CODE": str(checker_code),
+                     "LIVE_CHECK_SOURCE": "job-token",
+                     "LIVE_CHECK_REPORT": str(report),
+                     "GITHUB_STEP_SUMMARY": str(summary)},
+            )
+            self.assertIn("GitHub credential source: `job-token`",
+                          summary.read_text(encoding="utf-8"),
+                          "the provenance note must reach the summary, not only the log")
+        return result
 
     def test_the_live_layer_is_off_by_default(self):
         # If this ever fails, someone exported WAHA_LIVE_INTEGRATIONS into CI, and

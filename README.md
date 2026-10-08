@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 490 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 22 فحص عقد تكاملات + فحوص البايت
+على `sqlite` و`postgres` معًا: 492 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 22 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -308,7 +308,7 @@ GitHub أو Vercel أو Render أو Drive تمرّ بمُحمِّر قبل أن 
 |---|---|---|
 | Unit | `tests/test_integrations_core.py` (56) + `tests/test_integrations_portal.py` (35) | الإعداد والمُحمِّر وحراس النقل والعملاء الأربعة، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx وتجديد رمز Drive |
 | Integration | `tests/test_integrations_api.py` (36) | الحافة كلها عبر عميل Flask: Host موثوق ضد DNS rebinding، ومن يُسمح له، ومن أي مصدر، وبأي CSRF أو تأكيد |
-| Live | `tests/test_integrations_live.py` (11) + `scripts/integrations_live_check.py` (43 فحصًا لـ`--self-test`) | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
+| Live | `tests/test_integrations_live.py` (13) + `scripts/integrations_live_check.py` (43 فحصًا لـ`--self-test`) | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
 
 الطبقة الحية معطّلة افتراضيًا ولا تعمل في CI:
 

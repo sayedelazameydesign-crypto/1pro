@@ -112,7 +112,10 @@ jobs:
           set -uo pipefail
           python scripts/integrations_live_check.py --json > /tmp/live.json 2>/tmp/live.err
           code=$?
-          python - <<'PY'
+          # The exit code crosses the shell/python boundary as an environment
+          # variable, not as a bare name: `$code` does not exist inside the
+          # heredoc, and referring to it there was a NameError on every run.
+          LIVE_CHECK_CODE="$code" LIVE_CHECK_REPORT=/tmp/live.json python - <<'PY'
           import json, os, pathlib
 
           ESCAPE = {"%": "%25", "\r": "%0D", "\n": "%0A", ":": "%3A"}
@@ -122,7 +125,8 @@ jobs:
                   text = text.replace(ch, rep)
               return text[:800]
 
-          raw = pathlib.Path("/tmp/live.json").read_text(encoding="utf-8").strip()
+          raw = pathlib.Path(os.environ.get("LIVE_CHECK_REPORT", "/tmp/live.json")) \
+                   .read_text(encoding="utf-8").strip()
           try:
               rows = json.loads(raw) if raw else []
           except ValueError:
@@ -131,6 +135,10 @@ jobs:
                     "exit code was the only signal")
 
           source = os.environ.get("LIVE_CHECK_SOURCE", "unknown")
+          try:
+              code = int(os.environ.get("LIVE_CHECK_CODE", "0"))
+          except ValueError:
+              code = 1
           lines = ["| provider | operation | verdict | detail |", "|---|---|---|---|"]
           for row in rows:
               lines.append("| {provider} | {operation} | {status} | {detail} |".format(
