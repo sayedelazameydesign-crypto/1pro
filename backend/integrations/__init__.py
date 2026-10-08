@@ -1,4 +1,9 @@
-"""Owner-facing integrations: GitHub Actions and Vercel, behind owner auth.
+"""Owner-facing integrations: GitHub Actions, Vercel, Render and Google Drive.
+
+Four providers, one door. The read half of each is a GET that reports what the
+vendor says; the write half is a POST behind a confirmation phrase. Adding a
+provider means a client module, two settings fields and four cards -- never a new
+auth path, because ``owner_protect`` already owns authentication.
 
 The package mirrors the rule ARCHITECTURE.md states for ``agent/``: **it knows
 neither Flask nor the network**. ``app.py`` injects the transport, the config and
@@ -12,6 +17,8 @@ Layout::
     http.py      Transport protocol + urllib implementation + host allowlist
     github.py    GitHubClient: list workflow runs, dispatch a workflow
     vercel.py    VercelClient: list deployments, fire a deploy hook
+    render.py    RenderClient: list deploys, fire a deploy hook
+    drive.py     DriveClient: list a folder, create a text file
     service.py   IntegrationService: the only object app.py talks to
 """
 from .config import IntegrationConfig, load  # noqa: F401

@@ -22,9 +22,11 @@ import datetime
 import time
 
 from .config import IntegrationConfig, load
+from .drive import DriveClient
 from .github import GitHubClient
 from .http import Transport, UrllibTransport
 from .redact import build_redactor, fingerprint
+from .render import RenderClient
 from .vercel import VercelClient
 
 
@@ -47,6 +49,16 @@ class IntegrationService:
                                    transport=self.transport,
                                    timeout=self.config.timeout_seconds,
                                    resolver=self.resolver)
+        self.render = RenderClient(self.config.render, self.redact,
+                                   transport=self.transport,
+                                   timeout=self.config.timeout_seconds,
+                                   resolver=self.resolver)
+        # No resolver here: Drive is a fixed API host, not an operator-supplied URL,
+        # so the rebinding guard that the two deploy hooks need does not apply.
+        self.drive = DriveClient(self.config.drive, self.redact,
+                                 transport=self.transport,
+                                 timeout=self.config.timeout_seconds,
+                                 clock=clock)
 
     # -- status ------------------------------------------------------------
     def status(self):
@@ -65,6 +77,23 @@ class IntegrationService:
                 "token_fingerprint": fingerprint(cfg.vercel.token),
                 "capabilities": {"list_deployments": cfg.vercel.configured,
                                  "trigger_hook": cfg.vercel.hook_configured},
+            },
+            "render": {
+                **cfg.describe()["render"],
+                "token_fingerprint": fingerprint(cfg.render.api_key),
+                "capabilities": {"list_deploys": cfg.render.configured,
+                                 "trigger_hook": cfg.render.hook_configured},
+            },
+            "drive": {
+                **cfg.describe()["drive"],
+                # The refresh triple is the durable credential, so the fingerprint
+                # names it when present; an operator on the short-lived trial path
+                # gets the access token's fingerprint instead.
+                "token_fingerprint": (fingerprint(cfg.drive.refresh_token)
+                                      or fingerprint(cfg.drive.access_token)),
+                "capabilities": {"list_files": cfg.drive.configured,
+                                 "upload": cfg.drive.configured,
+                                 "default_folder": cfg.drive.folder_configured},
             },
             "limits": cfg.describe()["owner"],
             "confirm_phrases": cfg.describe()["confirm_phrases"],
@@ -89,5 +118,28 @@ class IntegrationService:
 
     def vercel_deploy(self):
         result = self.vercel.trigger_deploy_hook()
+        result["at"] = _now()
+        return result
+
+    # -- Render ------------------------------------------------------------
+    def render_deploys(self, limit=None):
+        result = self.render.list_deploys(limit or self.config.page_size)
+        result["fetched_at"] = _now()
+        return result
+
+    def render_deploy(self):
+        result = self.render.trigger_deploy_hook()
+        result["at"] = _now()
+        return result
+
+    # -- Google Drive ------------------------------------------------------
+    def drive_files(self, limit=None, folder_id=None):
+        result = self.drive.list_files(limit or self.config.page_size, folder_id=folder_id)
+        result["fetched_at"] = _now()
+        return result
+
+    def drive_upload(self, name, text, mime_type="text/markdown", folder_id=None):
+        result = self.drive.upload_text(name, text, mime_type=mime_type,
+                                        folder_id=folder_id)
         result["at"] = _now()
         return result

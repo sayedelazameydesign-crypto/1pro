@@ -4,7 +4,7 @@
 https://github.com/sayedelazameydesign-crypto/1pro
 
 **الحالة:** `main` يحمل الآن الكتالوج **وطبقات R1→R6** (دُمج PR #8 عند `9a7af62`؛ CI أخضر
-على `sqlite` و`postgres` معًا: 452 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 18 فحص عقد تكاملات + فحوص البايت
+على `sqlite` و`postgres` معًا: 487 اختبار بايثون + 15 فحص عقد متصفح + 15 فحص عقد مكوّنات + 22 فحص عقد تكاملات + فحوص البايت
 `rag_index --check` و`rag_eval --check`). الكتالوج منشور على Pages ويعمل وأُعلن الإصدار
 `v0.1.0`. **الخادم منشور الآن** على Vercel عند `https://cela-umber.vercel.app` من `main`
 (`72371d6`): `/health` يردّ 200، و`/api/me` يردّ هوية صالحة، والمسار غير الموجود يُرجع 404
@@ -279,17 +279,22 @@ payload**؛ وما لم يُقرأ يُكتب «غير معروف» بلا لو�
 
 ## تكاملات المالك · `/integrations`
 
-صفحة إدارة واحدة خلف `/integrations`، تقرأ وتشغّل تكاملين فقط:
+صفحة إدارة واحدة خلف `/integrations`: أربعة تكاملات، وبطاقة قراءة وبطاقة كتابة لكل منها — ثمانِ بطاقات من باب واحد.
 
 | التكامل | قراءة | كتابة |
 |---|---|---|
 | GitHub Actions | `GET /api/owner/integrations/github/runs` — سجل التشغيلات | `POST /api/owner/integrations/github/dispatch` — تشغيل workflow |
 | Vercel | `GET /api/owner/integrations/vercel/deployments` — سجل النشرات | `POST /api/owner/integrations/vercel/deploy-hook` — نشر فعلي |
+| Render | `GET /api/owner/integrations/render/deploys` — سجل النشرات | `POST /api/owner/integrations/render/deploy-hook` — نشر فعلي (`deploy-render`) |
+| Google Drive | `GET /api/owner/integrations/drive/files` — ملفات المجلد | `POST /api/owner/integrations/drive/upload` — ملف نصي (`upload-drive`) |
 
-**الأسرار لا تغادر الخادم.** `GITHUB_*` و`VERCEL_*` و`DEPLOY_HOOK_*` تُقرأ في
+البوابة لا تتصل بشيء قبل أن يقرّر الخادم أنه مُهيّأ: تكاملٌ ناقص يجيب `503 not_configured`
+بأسماء المتغيرات الناقصة، ولا يُلَوَّن «جاهزًا» في البطاقات الثماني ولا يُستدعى مُشغّله.
+
+**الأسرار لا تغادر الخادم.** `GITHUB_*` و`VERCEL_*` و`DEPLOY_HOOK_*` و`RENDER_*` و`GOOGLE_DRIVE_*` تُقرأ في
 `backend/integrations/config.py`، و`describe()` ينشر أسماء المتغيرات وحالاتها فقط، وما
 يظهر في الواجهة بصمة SHA-256 رباعية الأطراف للرمز لا الرمز. وكل رسالة خطأ قادمة من
-GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المتصفح، ومسار الخروج في مدقّق الطبقة
+GitHub أو Vercel أو Render أو Drive تمرّ بمُحمِّر قبل أن تصل إلى المتصفح، ومسار الخروج في مدقّق الطبقة
 الحية يعيد فحص المحضر كاملًا قبل طباعته.
 
 **الحماية:** جلسة موقّعة بـHMAC تنتهي بعد 8 ساعات · CSRF مرتبط بالجلسة · قائمة CORS
@@ -301,7 +306,7 @@ GitHub أو Vercel تمرّ بمُحمِّر قبل أن تصل إلى المت�
 
 | الطبقة | الملف | ما تثبته |
 |---|---|---|
-| Unit | `tests/test_integrations_core.py` (56) | الإعداد والمُحمِّر وحراس النقل والعميلان، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx |
+| Unit | `tests/test_integrations_core.py` (56) + `tests/test_integrations_portal.py` (35) | الإعداد والمُحمِّر وحراس النقل والعملاء الأربعة، بنقل مُزيَّف — بما فيها DNS pinning وحالات 401/403/422/429/5xx وتجديد رمز Drive |
 | Integration | `tests/test_integrations_api.py` (36) | الحافة كلها عبر عميل Flask: Host موثوق ضد DNS rebinding، ومن يُسمح له، ومن أي مصدر، وبأي CSRF أو تأكيد |
 | Live | `tests/test_integrations_live.py` (8) + `scripts/integrations_live_check.py` | أن **الرموز وصلاحياتها** تعمل فعلًا — وهو ما لا تراه الطبقتان السابقتان لأن الـmock يجيب 200 مهما كان الرمز |
 

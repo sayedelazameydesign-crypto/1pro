@@ -548,7 +548,9 @@ class ServiceTests(unittest.TestCase):
     def test_the_confirm_phrases_are_published_to_the_client(self):
         service, _ = self.service()
         self.assertEqual(service.status()["confirm_phrases"],
-                         {"github_dispatch": "dispatch-ci", "vercel_deploy": "deploy"})
+                         {"github_dispatch": "dispatch-ci", "vercel_deploy": "deploy",
+                          "render_deploy": "deploy-render",
+                          "drive_upload": "upload-drive"})
 
 
 class ModuleImportTests(unittest.TestCase):
