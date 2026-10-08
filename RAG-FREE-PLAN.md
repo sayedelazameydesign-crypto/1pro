@@ -336,7 +336,7 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_agent_runtime.py` | 33 |
 | `tests/test_capability_matrix.py` | 7 |
 | `tests/test_components_contract.py` | 8 |
-| `tests/test_deploy_doctor.py` | 22 |
+| `tests/test_deploy_doctor.py` | 26 |
 | `tests/test_docs_match_code.py` | 11 |
 | `tests/test_integrations_api.py` | 36 |
 | `tests/test_integrations_core.py` | 56 |
@@ -347,7 +347,7 @@ PR بعد أن صار العدد ضعفه.
 | `tests/test_rag_search.py` | 29 |
 | `tests/test_vercel_wrapper.py` | 5 |
 | `tests/test_waha.py` | 24 |
-| **المجموع** | **452** |
+| **المجموع** | **456** |
 
 فحص عقد المتصفح: 15 فحصًا (`node tests/browser_search.test.mjs`) + فحص `--check` للبايت في CI.
 فحص عقد المكوّنات: 15 فحصًا (`node tests/browser_components.test.mjs`)، يثبّت أنّ بطاقة لا تخضرّ

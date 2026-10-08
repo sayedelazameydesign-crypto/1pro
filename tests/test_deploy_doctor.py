@@ -1,4 +1,6 @@
 """The deploy doctor must catch the mistakes that actually break a free deploy."""
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -7,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from deploy_doctor import check, load_env_file, self_test  # noqa: E402
+from deploy_doctor import check, load_env_file, main, self_test  # noqa: E402
 
 PAGES = "https://sayedelazameydesign-crypto.github.io"
 GOOD = {
@@ -135,6 +137,33 @@ class CheckTests(unittest.TestCase):
     def test_fake_agent_mode_is_flagged_on_public_hosts(self):
         _e, warnings, _n = check(dict(GOOD, AGENT_FAKE="1"), target="render")
         self.assertTrue(any("AGENT_FAKE" in item for item in warnings))
+
+    def test_short_waha_secret_is_an_error_on_every_target(self):
+        # Length is the rule. The placeholder heuristic treats anything under 20
+        # characters as "empty", which used to hide a 5-character secret completely.
+        for target in ("render", "vercel"):
+            for value in ("short", "x" * 31):
+                errors, _w, _n = check(dict(GOOD, WAHA_SECRET=value), target=target)
+                self.assertIn("WAHA_SECRET", codes(errors), (target, len(value)))
+
+    def test_fake_agent_mode_is_an_error_on_vercel(self):
+        errors, _w, _n = check(dict(GOOD, AGENT_FAKE="1"), target="vercel")
+        self.assertIn("AGENT_FAKE", codes(errors))
+
+    def test_vercel_neon_reminder_is_advice_not_a_warning(self):
+        # A warning makes --strict fail, so a generic reminder must stay a note.
+        _e, warnings, notes = check(dict(GOOD), target="vercel")
+        self.assertFalse(any("cold starts" in item for item in warnings), warnings)
+        self.assertTrue(any("cold starts" in item for item in notes), notes)
+
+    def test_clean_vercel_environment_passes_strict(self):
+        values = dict(GOOD, WAHA_TRUSTED_HOSTS="cela-umber.vercel.app")
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(tmp) / "service.env"
+            path.write_text("".join(f"{key}={value}\n" for key, value in values.items()),
+                            encoding="utf-8")
+            code = main(["--env-file", str(path), "--target", "vercel", "--strict"])
+        self.assertEqual(code, 0)
 
     def test_network_tools_note_mentions_approvals(self):
         _e, _w, notes = check(dict(GOOD, AGENT_NETWORK_TOOLS="1"), target="render")

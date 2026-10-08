@@ -139,14 +139,18 @@ def check(env, target="render", vercel_path=None):
             warnings.append("العنوان يبدو مباشرلاً لا pooled. على Vercel/Serverless يفتح كل استدعاء "
                             "بارد اتصالاً جديداً وقد يستنفد اتصالات Neon؛ استخدم رابط pooled.")
         if target == "vercel":
-            warnings.append("Vercel: راقب اتصالات Neon (cold starts) واستخدم رابط pooled دائماً.")
+            notes.append("Vercel: راقب اتصالات Neon (cold starts) واستخدم رابط pooled دائماً.")
 
     # 4) Secrets shape and leakage.
     if target == "vercel" and not env.get("WAHA_SECRET", "").strip():
         errors.append("WAHA_SECRET غير مضبوط على Vercel: /tmp زائل، فتُبطل جلسات الزوّار مع كل "
                       "إعادة تدوير. اضبطه في المتغيرات.")
-    if not _looks_placeholder(env.get("WAHA_SECRET", "")) and len(env.get("WAHA_SECRET", "")) < 32:
-        warnings.append("WAHA_SECRET أقصر من 32 حرفاً؛ ولّد قيمة أطول (secrets.token_hex(32)).")
+    # Length is the rule for any value that is set. The placeholder heuristic is written
+    # for keys like GEMINI and treats anything under 20 characters as empty, which would
+    # hide a weak secret. An unset value is left alone: render.yaml generates it.
+    waha_secret = env.get("WAHA_SECRET", "").strip()
+    if waha_secret and len(waha_secret) < 32:
+        errors.append("WAHA_SECRET أقصر من 32 حرفاً؛ ولّد قيمة أطول (secrets.token_hex(32)).")
     if target == "render" and env.get("WAHA_SECRET", "").strip():
         notes.append("WAHA_SECRET مضبوط يدوياً رغم أن render.yaml يولّده (generateValue)؛ "
                      "اليدوي يتجاوز المولَّد — لا بأس به لكن كن متعمَّداً.")
@@ -378,7 +382,13 @@ def check(env, target="render", vercel_path=None):
         notes.append("AGENT_NETWORK_TOOLS=1: أداة web_fetch متاحة. تظل محروسة ضد العناوين الداخلية "
                      "وتحتاج موافقة صريحة لكل مهمة (إلا مع AGENT_AUTO_APPROVE_READ_ONLY).")
     if env.get("AGENT_FAKE", "").strip() == "1":
-        warnings.append("AGENT_FAKE=1 على خادم عام: الردود نص ثابت من وضع العرض. احذفه بعد التجربة.")
+        # The code ignores this flag only while GEMINI_API_KEY is set. Removing the key
+        # later would turn canned agent replies on, so on Vercel it is a blocker.
+        fake_message = "AGENT_FAKE=1 على خادم عام: الردود نص ثابت من وضع العرض. احذفه بعد التجربة."
+        if target == "vercel":
+            errors.append(fake_message)
+        else:
+            warnings.append(fake_message)
 
     return errors, warnings, notes
 
